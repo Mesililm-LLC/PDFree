@@ -52,6 +52,12 @@ def pdf(name, count, kind="text"):
 for name, count, kind in [("text.pdf", 1, "text"), ("office.pdf", 20, "text"), ("mixed.pdf", 100, "mixed"), ("thousand.pdf", 1000, "text"), ("scan.pdf", 200, "scan"), ("vector.pdf", 1, "vector"), ("transparency.pdf", 1, "transparency")]:
     pdf(name, count, kind)
 (OUT / "malformed.pdf").write_bytes(b"This is deliberately not a PDF.\x00\xff")
-manifest = [{"file": p.name, "sha256": hashlib.sha256(p.read_bytes()).hexdigest(), "bytes": p.stat().st_size, "provenance": "Original deterministic PDFree fixture; scripts/generate-corpus.py", "license": "AGPL-3.0-only"} for p in sorted(OUT.glob("*.pdf"))]
+manifest_path = OUT / "manifest.json"
+existing = {entry["file"]: entry for entry in json.loads(manifest_path.read_text(encoding="utf-8"))} if manifest_path.exists() else {}
+# Only fixtures owned by this generator; personal PDFs in this folder stay private.
+for name in ("text.pdf", "office.pdf", "mixed.pdf", "thousand.pdf", "scan.pdf", "vector.pdf", "transparency.pdf", "malformed.pdf"):
+    p = OUT / name
+    existing[name] = {"file": name, "sha256": hashlib.sha256(p.read_bytes()).hexdigest(), "bytes": p.stat().st_size, "provenance": "Original deterministic PDFree fixture; scripts/generate-corpus.py", "license": "AGPL-3.0-only"}
+manifest = list(existing.values())
 (OUT / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 print(f"Generated {len(manifest)} fixtures")

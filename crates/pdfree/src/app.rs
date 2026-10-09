@@ -8,6 +8,10 @@ use std::{
 };
 use viewer_core::{Layout, PageSize, TileCache, TileKey, Viewport, clamp_zoom};
 
+#[cfg(test)]
+#[path = "reader_tests.rs"]
+mod reader_tests;
+
 pub struct State {
     engine: Engine,
     trace: Trace,
@@ -30,6 +34,8 @@ pub struct State {
     benchmark: bool,
     benchmark_stage: u8,
     pub dialog_open: bool,
+    tools: crate::features::ReaderTools,
+    path: Option<PathBuf>,
 }
 
 impl State {
@@ -61,10 +67,18 @@ impl State {
             benchmark,
             benchmark_stage: 0,
             dialog_open: false,
+            tools: Default::default(),
+            path: None,
         }
     }
 
     pub fn open(&mut self, ui: &AppWindow, path: PathBuf) {
+        self.open_password(ui, path, None);
+    }
+
+    fn open_password(&mut self, ui: &AppWindow, path: PathBuf, password: Option<String>) {
+        self.tools.reset(ui);
+        self.path = Some(path.clone());
         self.document += 1;
         self.generation += 1;
         self.sizes.clear();
@@ -99,7 +113,27 @@ impl State {
             "document_open_started",
             serde_json::json!({"document":self.document}),
         );
-        self.engine.open(self.document, self.generation, path);
+        self.engine
+            .open_with_password(self.document, self.generation, path, password);
+    }
+
+    pub fn password(&mut self, ui: &AppWindow, password: String) {
+        ui.set_password("".into());
+        if ui.get_password_required()
+            && let Some(path) = self.path.clone()
+        {
+            self.open_password(ui, path, Some(password));
+        }
+    }
+
+    pub fn search(&mut self, ui: &AppWindow, query: String) {
+        self.tools.query(ui, &self.engine, self.document, query);
+        self.tools.overlays(ui, &self.layout, self.zoom);
+    }
+
+    pub fn select_text(&mut self, ui: &AppWindow, page: usize, x: f32, y: f32, phase: i32) {
+        self.tools.select(ui, page, x, y, phase, self.zoom);
+        self.tools.overlays(ui, &self.layout, self.zoom);
     }
 
     pub fn navigate(&mut self, ui: &AppWindow, page: usize) {
@@ -116,6 +150,49 @@ impl State {
     }
 
     pub fn action(&mut self, ui: &AppWindow, action: &str) {
+        match action {
+            "password-cancel" => {
+                // Replace any pending authentication with an invalidated document identity.
+                self.document += 1;
+                self.generation += 1;
+                self.tools.reset(ui);
+                self.path = None;
+                ui.set_loading(false);
+                ui.set_status("Open a PDF to get started".into());
+                ui.set_detail("Password entry cancelled.".into());
+                return;
+            }
+            "thumbnails" => {
+                ui.set_sidebar_visible(!ui.get_sidebar_visible());
+                return;
+            }
+            "find" => {
+                if ui.get_ready() {
+                    ui.set_search_visible(true);
+                    ui.invoke_focus_search();
+                }
+                return;
+            }
+            "search-close" => {
+                ui.set_search_visible(false);
+                ui.set_search_query("".into());
+                self.search(ui, String::new());
+                ui.invoke_focus_document();
+                return;
+            }
+            "search-next" | "search-previous" => {
+                if let Some((page, top)) = self.tools.next_hit(action == "search-previous") {
+                    self.navigate(ui, page);
+                    ui.set_scroll_y(
+                        -(self.layout.pages[page].y + top * self.zoom * 96.0 / 72.0 - 60.0)
+                            .clamp(0.0, (self.layout.height - ui.get_view_height()).max(0.0)),
+                    );
+                    self.tools.overlays(ui, &self.layout, self.zoom);
+                }
+                return;
+            }
+            _ => {}
+        }
         if self.sizes.is_empty() {
             return;
         }
@@ -177,6 +254,7 @@ impl State {
             let Ok(event) = self.engine.events.try_recv() else {
                 break;
             };
+            changed |= self.tools.event(ui, self.document, &event);
             match event {
                 Event::Opened {
                     document,
@@ -187,6 +265,8 @@ impl State {
                     ui.set_page_count(info.pages as i32);
                     ui.set_loading(false);
                     ui.set_ready(true);
+                    ui.set_can_copy(info.can_copy);
+                    ui.set_password_required(false);
                     self.dirty = true;
                     self.trace.event("document_parsed", serde_json::json!({"pages":info.pages,"engine_ms":elapsed.as_secs_f64()*1000.0}));
                 }
@@ -237,7 +317,10 @@ impl State {
                         ui.set_ready(false);
                     }
                     ui.set_status(
-                        if matches!(error, EngineError::PasswordRequired) {
+                        if matches!(
+                            error,
+                            EngineError::PasswordRequired | EngineError::PasswordRejected
+                        ) {
                             "Password required"
                         } else {
                             "Unable to display PDF"
@@ -245,6 +328,10 @@ impl State {
                         .into(),
                     );
                     ui.set_detail(error.to_string().into());
+                    ui.set_password_required(matches!(
+                        error,
+                        EngineError::PasswordRequired | EngineError::PasswordRejected
+                    ));
                     self.trace
                         .event("error", serde_json::json!({"message":error.to_string()}));
                     if self.benchmark {
@@ -264,6 +351,8 @@ impl State {
             }
             return;
         }
+        self.tools
+            .thumbnails(ui, &self.engine, self.document, self.sizes.len());
         if !self.previews.is_empty() && self.zoom_started.elapsed() > Duration::from_millis(750) {
             self.previews.clear();
             changed = true;
@@ -347,6 +436,14 @@ impl State {
         let last = *visible.end();
         let resident: Vec<usize> =
             (first.saturating_sub(2)..=(last + 2).min(self.sizes.len() - 1)).collect();
+        self.tools.refresh(
+            ui,
+            &self.engine,
+            self.document,
+            &self.layout,
+            self.zoom,
+            &resident,
+        );
         let pages = resident
             .iter()
             .map(|&index| {

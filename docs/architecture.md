@@ -14,7 +14,7 @@ MuPDF is provisional: native Windows build, real clipped rendering, fidelity tes
 
 - `viewer-core`: PDF-point to logical-pixel geometry, DPI-aware 512-pixel tile keys, byte-budgeted LRU cache, bounded priority queue, and stale-result policy. No native or UI dependencies.
 - `pdf-engine`: owns all native handles. A dedicated coordinator serializes document/page access; up to four workers rasterize completed immutable display lists. Published mupdf's thread-local contexts clone its shared locked base context. Draw devices and pixmaps remain worker-local.
-- `pdfree`: owns Slint models/images, user actions, dialog coordination, traces, and display state. Only plain RGBA buffers cross into the UI. Images are constructed on the UI thread.
+- `pdfree`: owns Slint models/images, user actions, dialog coordination, traces, and display state. Plain RGBA buffers and owned text/search geometry cross into the UI. Images are constructed on the UI thread.
 
 Open commands and viewport requests use replaceable latest-value slots, with a bounded wake channel. The coordinator's render queue holds at most 128 requests, and at most four jobs are in flight. The event queue is bounded at 64. Visible tiles outrank two neighboring pages. Each request carries document identity, generation, page, quantized physical scale, rotation, and clip bounds.
 
@@ -23,6 +23,10 @@ Opening reads page count and first-page geometry, then publishes readiness. Late
 Viewport/zoom generations invalidate queued results. Started native calls finish; this prototype does not claim hard interruption of parsing or rasterization. Shutdown joins owned threads after the event loop, and bounded channels disconnect to release blocked workers. PDFs remain untrusted native inputs; process isolation and fuzzing are future hardening work.
 
 ## Memory policy
+
+Reader tools share the coordinator-owned PDF document. Authentication uses the published password API; COPY permission governs text snapshots and clipboard controls. Native search publishes owned page-local quadrilaterals as rectangles, with an independent search identity for cancellation. Text extraction retains at most 16 nearby snapshots of 100,000 glyphs each. Search caps at 10,000 grouped hits and 512 query bytes. Native page calls finish before cancellation takes effect.
+
+The UI owns single-page drag selection, multiline copying, and scaled highlights. Clipboard copying uses Slint's read-only LineEdit copy API on the UI thread. Thumbnail rows are virtualized (196 logical pixels, at most 32 nearby rows), rasterized at up to 140×160 on existing workers; their document identity survives viewport generation changes. Temporary thumbnail display lists never enter the viewport residency map. Passwords and extracted/search/copied text are excluded from traces.
 
 Raster cache: hard 128 MiB budget. UI image references are limited to the current viewport, with one previous visible set retained for up to 750 ms during zoom. Slint image copies, active worker buffers, page metadata, display lists, native store, fonts, and GPU allocations are additional memory and must be measured separately.
 

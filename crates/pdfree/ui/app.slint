@@ -2,6 +2,8 @@ import { Button, LineEdit, ScrollView, Spinner, Palette } from "std-widgets.slin
 
 export struct PageSurface { x: float, y: float, w: float, h: float, number: int }
 export struct TileSurface { pixels: image, x: float, y: float, w: float, h: float }
+export struct OverlaySurface { x: float, y: float, w: float, h: float, selected: bool }
+export struct ThumbnailSurface { number: int, pixels: image }
 
 export component AppWindow inherits Window {
     init => { Palette.color-scheme = ColorScheme.light; }
@@ -16,6 +18,16 @@ export component AppWindow inherits Window {
     in-out property <string> detail: "A fast, offline PDF viewer for Windows";
     in-out property <bool> ready: false;
     in-out property <bool> loading: false;
+    in-out property <bool> password-required: false;
+    in-out property <string> password;
+    in-out property <bool> can-copy: false;
+    in-out property <string> selection-text;
+    in-out property <bool> search-visible: false;
+    in-out property <string> search-query;
+    in-out property <string> search-status;
+    in-out property <bool> sidebar-visible: false;
+    in-out property <length> thumbnail-scroll: 0px;
+    out property <float> thumbnail-height: thumbnail-panel.height / 1px;
     in-out property <string> page-entry: "1";
     in-out property <int> page-count: 0;
     in-out property <int> zoom-percent: 100;
@@ -28,14 +40,36 @@ export component AppWindow inherits Window {
     in property <[PageSurface]> pages;
     in property <[TileSurface]> previews;
     in property <[TileSurface]> tiles;
+    in property <[OverlaySurface]> overlays;
+    in property <[ThumbnailSurface]> thumbnails;
     callback action(string);
     callback navigate(string);
+    callback password-submit(string);
+    callback search(string);
+    callback select-text(int, float, float, int);
+    callback thumbnail-click(int);
+
+    public function copy-selection() {
+        if root.can-copy && root.selection-text != "" {
+            clipboard-text.select-all();
+            clipboard-text.copy();
+        }
+    }
+    public function focus-document() { keys.focus(); }
+    public function focus-search() { search-entry.focus(); }
+    clipboard-text := LineEdit {
+        visible: false;
+        read-only: true;
+        text: root.selection-text;
+    }
 
     forward-focus: keys;
     keys := FocusScope {
         key-pressed(event) => {
             if event.modifiers.control {
                 if event.text == "o" || event.text == "O" { root.action("open"); return accept; }
+                if event.text == "f" || event.text == "F" { root.action("find"); return accept; }
+                if event.text == "c" || event.text == "C" { root.copy-selection(); return accept; }
                 if event.text == "+" || event.text == "=" { root.action("zoom-in"); return accept; }
                 if event.text == "-" { root.action("zoom-out"); return accept; }
                 if event.text == "0" { root.action("fit-width"); return accept; }
@@ -59,6 +93,9 @@ export component AppWindow inherits Window {
                     Text { text: "PDFree"; color: #146bca; font-size: 23px; font-weight: 700; }
                     Rectangle { width: 1px; background: #e3e8ef; }
                     Text { text: root.document-name; color: #526171; overflow: elide; horizontal-stretch: 1; vertical-alignment: center; }
+                    Button { text: "Pages"; enabled: root.ready; clicked => { root.action("thumbnails"); } }
+                    Button { text: "Find"; enabled: root.ready; clicked => { root.action("find"); } }
+                    Button { text: "Copy selection"; enabled: root.can-copy && root.selection-text != ""; clicked => { root.copy-selection(); } }
                     Button { text: "Open PDF"; clicked => { root.action("open"); } }
                 }
             }
@@ -81,9 +118,55 @@ export component AppWindow inherits Window {
                     Button { text: "Fit page"; enabled: root.ready; clicked => { root.action("fit-page"); } }
                 }
             }
-            viewport := Rectangle {
-                background: #e6ebf1;
+            Rectangle {
+                height: root.search-visible ? 46px : 0px;
+                visible: root.search-visible;
+                background: #ffffff;
+                HorizontalLayout {
+                    padding: 8px; spacing: 8px;
+                    search-entry := LineEdit {
+                        horizontal-stretch: 1;
+                        placeholder-text: "Find in document";
+                        text <=> root.search-query;
+                        edited => { root.search(self.text); }
+                        accepted => { root.action("search-next"); }
+                        key-pressed(event) => {
+                            if event.text == Key.Escape { root.action("search-close"); return accept; }
+                            return reject;
+                        }
+                    }
+                    Text { text: root.search-status; color: #526171; vertical-alignment: center; }
+                    Button { text: "Previous"; clicked => { root.action("search-previous"); } }
+                    Button { text: "Next"; clicked => { root.action("search-next"); } }
+                    Button { text: "Close"; clicked => { root.action("search-close"); } }
+                }
+            }
+            HorizontalLayout {
+                spacing: 0px;
                 vertical-stretch: 1;
+                thumbnail-panel := Rectangle {
+                    width: root.sidebar-visible && root.ready ? 180px : 0px;
+                    visible: root.sidebar-visible && root.ready;
+                    background: #f4f6f9;
+                    ScrollView {
+                        width: parent.width; height: parent.height;
+                        content-width: 164px;
+                        content-height: root.page-count * 196px;
+                        content-y <=> root.thumbnail-scroll;
+                        for thumbnail in root.thumbnails: Rectangle {
+                            x: 8px; y: (thumbnail.number - 1) * 196px + 6px;
+                            width: 148px; height: 184px;
+                            border-width: 1px; border-color: #d5dee8;
+                            background: white;
+                            Image { x: 4px; y: 4px; width: 140px; height: 160px; source: thumbnail.pixels; image-fit: contain; }
+                            Text { y: 164px; width: 100%; height: 20px; text: "Page " + thumbnail.number; horizontal-alignment: center; color: #526171; font-size: 12px; }
+                            TouchArea { clicked => { root.thumbnail-click(thumbnail.number - 1); root.focus-document(); } }
+                        }
+                    }
+                }
+                viewport := Rectangle {
+                background: #e6ebf1;
+                horizontal-stretch: 1;
                 if root.ready: ScrollView {
                     content-width: root.document-width * 1px;
                     content-height: root.document-height * 1px;
@@ -107,6 +190,30 @@ export component AppWindow inherits Window {
                         source: tile.pixels;
                         image-fit: fill;
                     }
+                    for overlay in root.overlays: Rectangle {
+                        x: overlay.x * 1px; y: overlay.y * 1px;
+                        width: overlay.w * 1px; height: overlay.h * 1px;
+                        background: overlay.selected ? #3a8de65c : #f5cc316b;
+                    }
+                    for page in root.pages: TouchArea {
+                        x: page.x * 1px; y: page.y * 1px;
+                        width: page.w * 1px; height: page.h * 1px;
+                        enabled: root.can-copy;
+                        mouse-cursor: text;
+                        pointer-event(event) => {
+                            if event.button == PointerEventButton.left {
+                                if event.kind == PointerEventKind.down {
+                                    root.focus-document();
+                                    root.select-text(page.number - 1, self.mouse-x / 1px, self.mouse-y / 1px, 0);
+                                } else if event.kind == PointerEventKind.up {
+                                    root.select-text(page.number - 1, self.mouse-x / 1px, self.mouse-y / 1px, 2);
+                                }
+                            }
+                        }
+                        moved => {
+                            if self.pressed { root.select-text(page.number - 1, self.mouse-x / 1px, self.mouse-y / 1px, 1); }
+                        }
+                    }
                 }
                 if !root.ready: VerticalLayout {
                     alignment: center;
@@ -115,8 +222,15 @@ export component AppWindow inherits Window {
                     if root.loading: Spinner { width: 36px; height: 36px; }
                     Text { text: root.status; color: #223b54; font-size: 25px; font-weight: 600; horizontal-alignment: center; wrap: word-wrap; }
                     Text { text: root.detail; color: #667b8d; font-size: 15px; horizontal-alignment: center; wrap: word-wrap; }
-                    Button { text: "Choose a PDF"; clicked => { root.action("open"); } }
+                    if root.password-required: HorizontalLayout {
+                        alignment: center; spacing: 8px;
+                        LineEdit { width: 250px; input-type: InputType.password; placeholder-text: "Document password"; text <=> root.password; accepted => { root.password-submit(self.text); } }
+                        Button { text: "Unlock"; clicked => { root.password-submit(root.password); } }
+                        Button { text: "Cancel"; clicked => { root.action("password-cancel"); } }
+                    }
+                    if !root.password-required: Button { text: "Choose a PDF"; clicked => { root.action("open"); } }
                 }
+            }
             }
             Rectangle {
                 height: 32px;

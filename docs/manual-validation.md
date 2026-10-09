@@ -17,3 +17,9 @@ The following human interaction checks remain **unverified**, and must be comple
 | Fidelity | Compare independent PDFs with Edge/Sumatra at identical scale | PDF rendering tested; broad visual comparison pending |
 
 No PDF was modified. No file associations, telemetry, cloud services, or remote repository were configured.
+
+## Reader tools milestone
+
+The reader-tools suite passes 27 automated tests, including real native password retry and COPY restrictions, case-insensitive search/cancellation, cropped-page text coordinates, blank-page extraction, bounded/coalesced requests, and cached replay after rapid return. The full Slint app runs against a software test platform: simulated pointer events select PDF text at 125% zoom and 150% DPI, Ctrl+C writes to a mocked clipboard, a thumbnail click navigates, password cancellation/retry works, and malformed-file recovery succeeds. Renderer snapshots show selection and lazy thumbnails aligned with the PDF. Automated clipboard tests do not overwrite the Windows clipboard.
+
+Physical mouse dragging and Windows clipboard pasting, complex/multicolumn/RTL reading order, password entry through a real keyboard, and scrolling the thumbnail sidebar still need human qualification. Single-page selection is implemented; cross-page dragging/autoscroll and OCR are deferred. Prior viewer checks above retain their stated evidence boundaries.

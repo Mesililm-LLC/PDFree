@@ -19,7 +19,8 @@ independent = {
     "w3c-dummy.pdf": "https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf",
     "tracemonkey.pdf": "https://raw.githubusercontent.com/mozilla/pdf.js/master/test/pdfs/tracemonkey.pdf",
 }
-for path in sorted(out.glob("*.pdf")):
+for name in sorted(set(original) | set(independent) | {"encrypted.pdf"}):
+    path = out / name
     entry = original.get(path.name, {"file": path.name})
     entry.update(sha256=hashlib.sha256(path.read_bytes()).hexdigest(), bytes=path.stat().st_size)
     if path.name in independent:

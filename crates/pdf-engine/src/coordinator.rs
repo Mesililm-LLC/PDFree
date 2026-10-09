@@ -1,6 +1,9 @@
 use crate::{DocumentInfo, EngineError, Event, Shared, raster};
 use crossbeam_channel::{Receiver, Sender, bounded};
-use mupdf::{DisplayList, Document};
+use mupdf::{
+    DisplayList, Document,
+    pdf::{PdfDocument, Permission},
+};
 use std::{
     collections::{HashMap, HashSet},
     sync::{Arc, atomic::Ordering},
@@ -12,8 +15,10 @@ use viewer_core::{PageSize, PixelTile, RenderQueue, RenderRequest};
 struct Job {
     request: RenderRequest,
     list: Arc<DisplayList>,
+    thumbnail: bool,
 }
 struct Completed {
+    thumbnail: bool,
     request: RenderRequest,
     pixels: Option<Result<PixelTile, EngineError>>,
     elapsed: Duration,
@@ -52,10 +57,14 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                             break;
                         }
                         let started = Instant::now();
-                        let pixels = shared
-                            .current(job.request.key.document, job.request.generation)
-                            .then(|| raster::render(&job.list, job.request.key));
+                        let valid = if job.thumbnail {
+                            shared.current_document(job.request.key.document)
+                        } else {
+                            shared.current(job.request.key.document, job.request.generation)
+                        };
+                        let pixels = valid.then(|| raster::render(&job.list, job.request.key));
                         let result = Completed {
+                            thumbnail: job.thumbnail,
                             request: job.request,
                             pixels,
                             elapsed: started.elapsed(),
@@ -70,7 +79,9 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
     }
     drop(completed);
     drop(job_rx);
-    let mut document: Option<Document> = None;
+    let mut document: Option<PdfDocument> = None;
+    let mut can_copy = false;
+    let mut reader = crate::reader::Reader::default();
     let mut document_id = 0;
     let mut geometry: Vec<Option<PageSize>> = Vec::new();
     let mut cursor = 0;
@@ -84,23 +95,34 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
             std::mem::take(&mut *slot)
         };
         if let Some(open) = desired.open {
+            reader = crate::reader::Reader::default();
             lists.clear();
             document = None;
             geometry.clear();
             queue.replace(Vec::new());
             document_id = open.document;
             let started = Instant::now();
-            let load = || -> Result<(Document, DocumentInfo), EngineError> {
+            let load = || -> Result<(PdfDocument, DocumentInfo), EngineError> {
                 let path = open.path.to_str().ok_or_else(|| {
                     EngineError::InvalidDocument("Path is not valid Unicode".into())
                 })?;
-                let doc = Document::open(path)
+                let mut doc = Document::open(path)
+                    .and_then(PdfDocument::try_from)
                     .map_err(|e| EngineError::InvalidDocument(e.to_string()))?;
                 if doc
                     .needs_password()
                     .map_err(|e| EngineError::InvalidDocument(e.to_string()))?
                 {
-                    return Err(EngineError::PasswordRequired);
+                    let password = open
+                        .password
+                        .as_deref()
+                        .ok_or(EngineError::PasswordRequired)?;
+                    if !doc
+                        .authenticate(password)
+                        .map_err(|e| EngineError::InvalidDocument(e.to_string()))?
+                    {
+                        return Err(EngineError::PasswordRejected);
+                    }
                 }
                 let count = doc
                     .page_count()
@@ -115,6 +137,7 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                     .and_then(|p| p.bounds())
                     .map_err(|e| EngineError::InvalidDocument(e.to_string()))?;
                 let info = DocumentInfo {
+                    can_copy: doc.permissions().contains(Permission::COPY),
                     pages: count as usize,
                     first_page: PageSize::new(bounds.width(), bounds.height()),
                 };
@@ -122,6 +145,7 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
             };
             match load() {
                 Ok((doc, info)) if shared.current(open.document, open.generation) => {
+                    can_copy = info.can_copy;
                     geometry = vec![None; info.pages];
                     geometry[0] = Some(info.first_page);
                     cursor = 1;
@@ -149,6 +173,21 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                 }
             }
         }
+        if let Some((id, pages)) = desired.text
+            && id == document_id
+        {
+            reader.text_pages(pages, geometry.len());
+        }
+        if let Some((id, pages)) = desired.thumbnails
+            && id == document_id
+        {
+            reader.thumbnails(pages, geometry.len());
+        }
+        if let Some((id, search, query)) = desired.search
+            && id == document_id
+        {
+            reader.search(search, query);
+        }
         if let Some(view) = desired.view
             && view.document == document_id
             && shared.current(view.document, view.generation)
@@ -157,12 +196,54 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
             queue.replace(
                 view.requests
                     .into_iter()
-                    .filter(|r| !inflight.contains(&(r.key, r.generation)))
+                    .filter(|r| !inflight.contains(&(r.key, r.generation, false)))
                     .collect(),
             );
         }
         while let Ok(result) = results.try_recv() {
-            inflight.remove(&(result.request.key, result.request.generation));
+            inflight.remove(&(
+                result.request.key,
+                result.request.generation,
+                result.thumbnail,
+            ));
+            if result.thumbnail {
+                if shared.current_document(result.request.key.document)
+                    && reader.thumbnail_wanted(result.request.key.page)
+                {
+                    match result.pixels {
+                        Some(Ok(pixels)) => {
+                            let Some(pixels) =
+                                reader.thumbnail_finished(result.request.key, pixels)
+                            else {
+                                continue;
+                            };
+                            emit(
+                                &shared,
+                                &events,
+                                Event::Thumbnail {
+                                    key: result.request.key,
+                                    pixels,
+                                    elapsed: result.elapsed,
+                                },
+                            );
+                        }
+                        Some(Err(error)) => {
+                            emit(
+                                &shared,
+                                &events,
+                                Event::ReaderError {
+                                    document: document_id,
+                                    operation: "thumbnail",
+                                    page: Some(result.request.key.page),
+                                    message: error.to_string(),
+                                },
+                            );
+                        }
+                        None => {}
+                    }
+                }
+                continue;
+            }
             if !shared.current(result.request.key.document, result.request.generation) {
                 continue;
             }
@@ -248,9 +329,10 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                     }
                 }
                 if let Some(list) = lists.get(&page) {
-                    inflight.insert((request.key, request.generation));
+                    inflight.insert((request.key, request.generation, false));
                     if jobs
                         .send(Job {
+                            thumbnail: false,
                             request,
                             list: list.clone(),
                         })
@@ -259,6 +341,72 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                         break;
                     }
                 }
+            }
+            if queue.is_empty()
+                && inflight.len() < workers
+                && let Some(page) = reader.next_thumbnail()
+            {
+                if let Some((key, pixels)) = reader.cached_thumbnail(page) {
+                    emit(
+                        &shared,
+                        &events,
+                        Event::Thumbnail {
+                            key,
+                            pixels,
+                            elapsed: Duration::ZERO,
+                        },
+                    );
+                    continue;
+                }
+                let result = doc.load_page(page as i32).and_then(|p| {
+                    let bounds = p.bounds()?;
+                    let scale = (140.0 / bounds.width())
+                        .min(160.0 / bounds.height())
+                        .min(1.0);
+                    let scale_milli = (scale * 1000.0).floor().max(1.0) as u32;
+                    let scale = scale_milli as f32 / 1000.0;
+                    let key = viewer_core::TileKey {
+                        document: document_id,
+                        page,
+                        scale_milli,
+                        rotation: 0,
+                        x: 0,
+                        y: 0,
+                        width: (bounds.width() * scale).ceil().clamp(1.0, 140.0) as u32,
+                        height: (bounds.height() * scale).ceil().clamp(1.0, 160.0) as u32,
+                    };
+                    Ok((key, p.to_display_list(true)?))
+                });
+                match result {
+                    Ok((key, list)) => {
+                        let request = RenderRequest {
+                            key,
+                            generation: 0,
+                            priority: u32::MAX,
+                        };
+                        inflight.insert((key, 0, true));
+                        let _ = jobs.send(Job {
+                            request,
+                            list: Arc::new(list),
+                            thumbnail: true,
+                        });
+                    }
+                    Err(error) => {
+                        emit(
+                            &shared,
+                            &events,
+                            Event::ReaderError {
+                                document: document_id,
+                                operation: "thumbnail",
+                                page: Some(page),
+                                message: error.to_string(),
+                            },
+                        );
+                    }
+                }
+            }
+            if let Some(event) = reader.tick(doc, document_id, geometry.len(), can_copy, &shared) {
+                emit(&shared, &events, event);
             }
             // One page per iteration bounds background work between user commands.
             while cursor < geometry.len() && geometry[cursor].is_some() {

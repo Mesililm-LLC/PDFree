@@ -17,7 +17,9 @@ The first build downloads public Rust dependencies. The application itself has n
 
 ## Controls
 
-Open PDF or Ctrl+O opens the native picker. Use the scrollbars or wheel to browse, enter a page number to jump, and use toolbar controls to zoom or fit the page. Ctrl +/− changes zoom, Ctrl+0 fits width, PgUp/PgDn changes page, arrows scroll, and Home/End navigates to the beginning/end. Zoom is limited to 25–400%. Encrypted files display a password-required state; password entry comes later.
+Open PDF or Ctrl+O opens the native picker. Use the scrollbars or wheel to browse, enter a page number to jump, and use toolbar controls to zoom or fit the page. Ctrl +/− changes zoom, Ctrl+0 fits width, PgUp/PgDn changes page, arrows scroll, and Home/End navigates to the beginning/end. Zoom is limited to 25–400%.
+
+Encrypted PDFs show a masked password form with retry and cancel. Ctrl+F or Find opens case-insensitive search; Enter/Next and Previous move between highlighted matches. Pages toggles lazy thumbnails; click one to jump. Drag across text within a page, then press Ctrl+C or Copy selection. Copy restrictions are respected. Image-only pages have no selectable text; OCR and selection across page boundaries are deferred. Passwords, queries, and copied text are not written to traces.
 
 ## Validation
 
@@ -31,17 +33,20 @@ Fixtures are checked in with provenance/hashes in `tests/corpus/manifest.json`. 
 ```powershell
 python -m pip install --target .tools/python pypdf==6.1.1
 python scripts/complete-corpus.py
+python scripts/reader-corpus.py
 ```
 
 Independent PDFs retain upstream copyrights and their recorded source URLs. Encrypted fixture password: `pdfree-test`.
 
 Read [architecture](docs/architecture.md), [feature coverage](docs/feature-matrix.md), [benchmark results](benchmarks/results/REPORT.md), [manual validation boundaries](docs/manual-validation.md), and [backlog](docs/backlog.md). Performance targets are goals, not claims. Physical presentation timing, post-reboot cold trials, and broad independent-reader comparison require separate evidence.
 
+Reader-tool test evidence and 20 updated warm trials: [reader tools validation](benchmarks/results/reader-tools.md).
+
 ## Known limits
 
 The application raster cache is bounded at 128 MiB. MuPDF 0.8.0 fixes its native-store threshold at 256 MiB; the planned 64 MiB target remains unmet. Native allocations, Slint images, GPU resources, and live document/display-list objects are additional memory. Cancellation drops queued/stale work; active native calls finish. Malicious native inputs are not isolated in a separate process.
 
-Search, text selection, annotations, editing, forms, saving, OCR, redaction, signatures, and AI are not implemented. See the feature matrix for precise status.
+Search is capped at 10,000 matches and 512 UTF-8 bytes per query. Selectable text is capped at 100,000 characters per page, retained for at most 16 nearby pages. Thumbnails retain at most 32 nearby rows. Annotations, editing, forms, saving, OCR, redaction, signatures, and AI are not implemented. See the feature matrix for precise status.
 
 ## License
 

@@ -2,6 +2,7 @@
 
 mod app;
 mod capture;
+mod features;
 mod trace;
 
 use slint::ComponentHandle;
@@ -84,6 +85,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             navigate_state
                 .borrow_mut()
                 .navigate(&ui, page.saturating_sub(1));
+        }
+    });
+    let password_state = state.clone();
+    let password_ui = ui.as_weak();
+    ui.on_password_submit(move |password| {
+        if let Some(ui) = password_ui.upgrade() {
+            password_state
+                .borrow_mut()
+                .password(&ui, password.to_string());
+        }
+    });
+    let search_state = state.clone();
+    let search_ui = ui.as_weak();
+    ui.on_search(move |query| {
+        if let Some(ui) = search_ui.upgrade() {
+            search_state.borrow_mut().search(&ui, query.to_string());
+        }
+    });
+    let select_state = state.clone();
+    let select_ui = ui.as_weak();
+    ui.on_select_text(move |page, x, y, phase| {
+        if let Some(ui) = select_ui.upgrade()
+            && page >= 0
+        {
+            select_state
+                .borrow_mut()
+                .select_text(&ui, page as usize, x, y, phase);
+        }
+    });
+    let thumbnail_state = state.clone();
+    let thumbnail_ui = ui.as_weak();
+    ui.on_thumbnail_click(move |page| {
+        if let Some(ui) = thumbnail_ui.upgrade()
+            && page >= 0
+        {
+            thumbnail_state.borrow_mut().navigate(&ui, page as usize);
         }
     });
     let timer = slint::Timer::default();

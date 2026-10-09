@@ -2,9 +2,11 @@
 mod cache;
 mod geometry;
 mod queue;
+mod text;
 pub use cache::*;
 pub use geometry::*;
 pub use queue::*;
+pub use text::*;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct TileKey {
