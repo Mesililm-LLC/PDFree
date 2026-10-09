@@ -28,4 +28,6 @@ Physical mouse dragging and Windows clipboard pasting, complex/multicolumn/RTL r
 
 Use disposable copies when testing actual filename changes. Double-click the header filename, confirm with Enter, cancel with Escape, and try a name that already exists. Add a highlight and a Unicode/multiline note; edit the note, undo and redo, then Save As to a new path. Reopen the saved copy in PDFree and an independent reader and inspect geometry and note contents. Repeat with an encrypted fixture. The original bytes should remain unchanged by Save As.
 
+Inline rename now saves the current annotations too. Add notes, confirm a new filename, and verify the Unsaved badge clears and the renamed PDF contains them after reopening. Confirm the same filename to save without moving it. Undo after rename should mark drafts unsaved again; redo restores the checkpoint. A conflicting name or failed file replacement must retain the annotations and report the failure.
+
 Try opening another PDF and closing while drafts are unsaved; verify Save As, Discard and Cancel, including cancelling the native save picker and a save conflict. Resize and zoom with draft overlays. Test denied filesystem access on a disposable folder. Native file-picker interaction, physical double-click cadence, cross-reader appearance, access-denied recovery and mixed-monitor behavior require human qualification.

@@ -25,7 +25,7 @@ Statuses describe application behavior, not everything MuPDF could support.
 | Highlights / sticky notes | Implemented, experimental | Session drafts, editable new notes, existing notes read-only; native annotations in saved copies |
 | Undo / redo | Implemented | Annotation history only, 200 commands / 32 MiB; filename changes are separate |
 | Save As | Implemented, experimental | New file only; original remains open and unchanged; preserves encryption |
-| Inline filename rename | Implemented | Double-click header, Enter/Escape; real same-folder rename, no overwrite |
+| Inline filename rename and save | Implemented | Enter commits current annotations and filename; another file is never replaced; undo history retained |
 | Page editing / forms / existing content editing | Unsupported in prototype | Separate editing milestone |
 | Redaction, OCR, compression, conversion | Unsupported in prototype | Separate acceptance gates |
 | Existing content editing / signatures | Unsupported in prototype | Separate fidelity and security research |

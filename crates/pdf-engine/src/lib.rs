@@ -43,6 +43,10 @@ enum FileCommandAction {
         annotations: Vec<Annotation>,
     },
     Rename(String),
+    RenameAndSave {
+        name: String,
+        annotations: Vec<Annotation>,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -287,6 +291,19 @@ impl Engine {
             document,
             operation,
             action: FileCommandAction::Rename(name),
+        })
+    }
+    pub fn rename_and_save(
+        &self,
+        document: u64,
+        operation: u64,
+        name: String,
+        annotations: Vec<Annotation>,
+    ) -> bool {
+        self.file(FileCommand {
+            document,
+            operation,
+            action: FileCommandAction::RenameAndSave { name, annotations },
         })
     }
 

@@ -1,5 +1,9 @@
 # Annotation editing and inline rename
 
+## Approved behavior refinement
+
+The user subsequently requested that confirming a filename rename also saves current annotations. This supersedes the original rename-only/source-unchanged boundary below: Enter commits the current highlights/notes and checkpoints the journal, including an unchanged filename. Save As still preserves its source. Keep an unannotated authenticated native baseline in memory after rename/save so undo/redo remains available and subsequent saves never duplicate drafts. Verify encrypted output, conflicts and replacement failures before publishing success; preserve drafts on failure. Never modify private PDFs in development tests.
+
 The user approved text highlights, sticky notes, undo/redo, and Save As, and requested double-click inline PDF filename renaming. Their AGENTS instructions authorize reversible implementation and routine decisions without additional approval. Execute this architectural extension inline with scoped parallel ownership, tests, and a fresh final review; do not introduce another approval handoff.
 
 Keep the pinned Rust/Slint/MuPDF stack, coordinator ownership, bounded queues/caches, offline operation, and private corpus boundaries. Original supplied research remains unchanged.

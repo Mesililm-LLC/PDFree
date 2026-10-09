@@ -160,7 +160,7 @@ export component AppWindow inherits Window {
                 visible: root.rename-active || root.file-message != "";
                 height: self.visible ? 30px : 0px;
                 background: #fff8e8;
-                Text { x: 16px; width: parent.width - 32px; height: 100%; text: root.file-message != "" ? root.file-message : "Enter to rename the PDF • Esc to cancel"; color: #805715; overflow: elide; vertical-alignment: center; font-size: 12px; }
+                Text { x: 16px; width: parent.width - 32px; height: 100%; text: root.file-message != "" ? root.file-message : "Enter to save and rename • Esc to cancel"; color: #805715; overflow: elide; vertical-alignment: center; font-size: 12px; }
             }
             Rectangle {
                 height: 52px;

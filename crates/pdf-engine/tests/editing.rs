@@ -78,6 +78,87 @@ fn edits() -> Vec<Annotation> {
     ]
 }
 #[test]
+fn rename_commits_annotations_without_duplicating_retained_session_drafts() {
+    let dir = directory();
+    let source = dir.join("source.pdf");
+    std::fs::copy(workspace().join("tests/corpus/encrypted.pdf"), &source).unwrap();
+    let original = std::fs::read(&source).unwrap();
+    let engine = Engine::spawn(1);
+    engine.open_with_password(1, 1, source.clone(), Some("pdfree-test".into()));
+    wait(&engine, |e| matches!(e, Event::Opened { .. }));
+    let occupied = dir.join("occupied.pdf");
+    std::fs::write(&occupied, b"keep").unwrap();
+    assert!(engine.rename_and_save(1, 1, "occupied.pdf".into(), edits()));
+    assert!(matches!(
+        wait(&engine, |e| matches!(
+            e,
+            Event::FileError { operation: 1, .. }
+        )),
+        Event::FileError { .. }
+    ));
+    assert_eq!(std::fs::read(&source).unwrap(), original);
+    assert_eq!(std::fs::read(&occupied).unwrap(), b"keep");
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ)
+            .open(&source)
+            .unwrap();
+        assert!(engine.rename_and_save(1, 10, "source.pdf".into(), edits()));
+        assert!(matches!(
+            wait(&engine, |e| matches!(
+                e,
+                Event::FileError { operation: 10, .. }
+            )),
+            Event::FileError { .. }
+        ));
+        assert_eq!(std::fs::read(&source).unwrap(), original);
+        drop(lock);
+    }
+    for (op, name, annotations, count) in [
+        (2, "renamed.pdf", edits(), 2),
+        (3, "renamed.pdf", edits(), 2),
+        (4, "renamed.pdf", vec![], 0),
+    ] {
+        assert!(engine.rename_and_save(1, op, name.into(), annotations));
+        assert!(matches!(
+            wait(
+                &engine,
+                |e| matches!(e,Event::FileDone{operation,..}|Event::FileError{operation,..} if *operation==op)
+            ),
+            Event::FileDone { .. }
+        ));
+        let mut doc = mupdf::pdf::PdfDocument::try_from(
+            mupdf::Document::open(dir.join(name).to_str().unwrap()).unwrap(),
+        )
+        .unwrap();
+        assert!(doc.needs_password().unwrap());
+        assert!(doc.authenticate("pdfree-test").unwrap());
+        assert_eq!(doc.load_pdf_page(0).unwrap().annotations().count(), count);
+    }
+    assert!(!source.exists());
+    let copy = dir.join("another-copy.pdf");
+    assert!(engine.save_as(1, 5, copy.clone(), edits()));
+    assert!(matches!(
+        wait(&engine, |e| matches!(
+            e,
+            Event::FileDone { operation: 5, .. } | Event::FileError { operation: 5, .. }
+        )),
+        Event::FileDone { .. }
+    ));
+    let mut doc =
+        mupdf::pdf::PdfDocument::try_from(mupdf::Document::open(copy.to_str().unwrap()).unwrap())
+            .unwrap();
+    assert!(doc.authenticate("pdfree-test").unwrap());
+    assert_eq!(doc.load_pdf_page(0).unwrap().annotations().count(), 2);
+    drop(doc);
+    drop(engine);
+    cleanup(dir);
+}
+
+#[test]
 fn saved_crop_origin_annotations_keep_page_local_positions() {
     let dir = directory();
     let source = dir.join("crop-source.pdf");

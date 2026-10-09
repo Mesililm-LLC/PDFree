@@ -69,6 +69,8 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                             pixels,
                             elapsed: started.elapsed(),
                         };
+                        // A completion also acknowledges release of file-backed image resources.
+                        drop(job.list);
                         if send.send(result).is_err() {
                             break;
                         }
@@ -202,6 +204,47 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                         || shared.current_document(command.document),
                     )
                     .map(|path| (path, FileAction::SaveAs)),
+                    FileCommandAction::RenameAndSave { name, annotations } => {
+                        match crate::files::prepare_rename(
+                            doc,
+                            &source_path,
+                            session_password.as_deref(),
+                            &name,
+                            &annotations,
+                            || shared.current_document(command.document),
+                        ) {
+                            Err(e) => Err(e),
+                            Ok(prepared) => {
+                                while deferred_results.len() < inflight.len()
+                                    && !shared.stopping.load(Ordering::Acquire)
+                                {
+                                    match results.recv_timeout(Duration::from_millis(10)) {
+                                        Ok(result) => deferred_results.push_back(result),
+                                        Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
+                                        Err(_) => break,
+                                    }
+                                }
+                                if !shared.current_document(command.document) {
+                                    Err("Document changed before rename completed".into())
+                                } else {
+                                    lists.clear();
+                                    drop(document.take());
+                                    let (baseline, result) = prepared.commit(&source_path);
+                                    document = Some(baseline);
+                                    match result {
+                                        Ok(path) => {
+                                            source_path = path.clone();
+                                            Ok((path, FileAction::Rename))
+                                        }
+                                        Err(failure) => {
+                                            source_path = failure.path;
+                                            Err(failure.message)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                     FileCommandAction::Rename(name) => {
                         match crate::files::renamed_path(&source_path, &name) {
                             Err(e) => Err(e),

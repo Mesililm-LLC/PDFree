@@ -23,7 +23,7 @@ Encrypted PDFs show a masked password form with retry and cancel. Ctrl+F or Find
 
 ## Validation
 
-Double-click the document filename in the header to rename the actual file in its current folder. Enter confirms, Escape cancels, and a missing `.pdf` extension is added. Existing files are never overwritten; a conflict or invalid Windows filename leaves the editor open with an explanation.
+Double-click the document filename in the header to rename the actual file in its current folder. Enter also saves the current highlights and notes and clears the Unsaved badge; undo/redo stays available. Confirming the current filename saves edits without moving the file. Escape cancels, and a missing `.pdf` extension is added. A conflict with another file or invalid Windows filename leaves the editor and your edits available.
 
 Select text and choose Highlight, or choose Note and click a page to write a sticky note. Click a new note to edit it; existing PDF notes open read-only. Undo/Redo and Ctrl+Z/Ctrl+Y apply to this session's annotations. Save As (Ctrl+S) writes an annotated copy and keeps the original open, preserving undo history. Opening another PDF or closing with unsaved annotations offers Save As, Discard, or Cancel. Saving to an existing path is rejected: choose a new filename.
 

@@ -136,6 +136,222 @@ impl Drop for Temporary {
     }
 }
 
+pub(crate) struct PreparedRename {
+    pub baseline: PdfDocument,
+    pub target: PathBuf,
+    staged: Temporary,
+}
+pub(crate) struct CommitFailure {
+    pub path: PathBuf,
+    pub message: String,
+}
+
+pub(crate) fn prepare_rename(
+    doc: &PdfDocument,
+    source: &Path,
+    password: Option<&str>,
+    name: &str,
+    annotations: &[Annotation],
+    current: impl Fn() -> bool,
+) -> Result<PreparedRename, String> {
+    if !fs::symlink_metadata(source)
+        .map_err(|e| e.to_string())?
+        .file_type()
+        .is_file()
+    {
+        return Err(
+            "Rename and save requires a regular PDF file; open the linked file directly.".into(),
+        );
+    }
+    let target = renamed_path(source, name)?;
+    if target != source && target.exists() {
+        // Windows case-only names refer to the same directory entry and are allowed.
+        let same_spelling = source
+            .file_name()
+            .and_then(|n| n.to_str())
+            .zip(target.file_name().and_then(|n| n.to_str()))
+            .is_some_and(|(a, b)| a.to_lowercase() == b.to_lowercase());
+        if !cfg!(windows) || !same_spelling {
+            return Err("That filename already exists. Choose a new name.".into());
+        }
+    }
+    let mut bytes = Vec::new();
+    doc.write_to_with_options(&mut bytes, options())
+        .map_err(|e| e.to_string())?;
+    let mut baseline = PdfDocument::from_bytes(&bytes).map_err(|e| e.to_string())?;
+    if baseline.needs_password().map_err(|e| e.to_string())?
+        && !baseline
+            .authenticate(password.unwrap_or(""))
+            .map_err(|e| e.to_string())?
+    {
+        return Err("Could not authenticate session baseline".into());
+    }
+    let parent = source.parent().ok_or("PDF folder is unavailable")?;
+    let staged_path = parent.join(format!(
+        ".pdfree-rename-{}-{}.pdf",
+        std::process::id(),
+        TEMP_ID.fetch_add(1, Ordering::Relaxed)
+    ));
+    let staged = Temporary(save(
+        &baseline,
+        source,
+        password,
+        &staged_path,
+        annotations,
+        current,
+    )?);
+    Ok(PreparedRename {
+        baseline,
+        target,
+        staged,
+    })
+}
+
+impl PreparedRename {
+    pub(crate) fn commit(self, source: &Path) -> (PdfDocument, Result<PathBuf, CommitFailure>) {
+        let Self {
+            baseline,
+            target,
+            staged,
+        } = self;
+        let moved = target != source;
+        if moved && let Err(e) = move_no_replace(source, &target) {
+            return (
+                baseline,
+                Err(CommitFailure {
+                    path: source.into(),
+                    message: format!(
+                        "Could not rename PDF: {e}. Original and draft annotations are unchanged."
+                    ),
+                }),
+            );
+        }
+        let backup = loop {
+            let path = target.with_file_name(format!(
+                ".pdfree-backup-{}-{}.pdf",
+                std::process::id(),
+                TEMP_ID.fetch_add(1, Ordering::Relaxed)
+            ));
+            match OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(file) => {
+                    drop(file);
+                    break path;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => {
+                    return (
+                        baseline,
+                        rollback_rename(
+                            source,
+                            target,
+                            moved,
+                            format!("Could not reserve a recovery file: {e}"),
+                        ),
+                    );
+                }
+            }
+        };
+        match replace_file(&target, &staged.0, &backup) {
+            Ok(()) => {
+                let _ = fs::remove_file(&backup);
+                (baseline, Ok(target))
+            }
+            Err(e) => {
+                // A zero-length file is our unused reservation, not the original PDF.
+                if fs::metadata(&backup).is_ok_and(|m| m.len() == 0) {
+                    let _ = fs::remove_file(&backup);
+                }
+                // ReplaceFile can leave the original at its backup name on rare failures.
+                // Never delete or overwrite that recovery copy when recovery is uncertain.
+                if backup.exists() {
+                    if !target.exists() && move_no_replace(&backup, &target).is_ok() {
+                        return (
+                            baseline,
+                            rollback_rename(
+                                source,
+                                target,
+                                moved,
+                                format!("Saving annotations failed: {e}"),
+                            ),
+                        );
+                    }
+                    return (
+                        baseline,
+                        Err(CommitFailure {
+                            path: backup.clone(),
+                            message: format!(
+                                "Saving failed ({e}). Original recovery copy is at {}. Draft annotations remain available; use Open to recover.",
+                                backup.display()
+                            ),
+                        }),
+                    );
+                }
+                (
+                    baseline,
+                    rollback_rename(
+                        source,
+                        target,
+                        moved,
+                        format!("Saving annotations failed: {e}"),
+                    ),
+                )
+            }
+        }
+    }
+}
+fn rollback_rename(
+    source: &Path,
+    target: PathBuf,
+    moved: bool,
+    message: String,
+) -> Result<PathBuf, CommitFailure> {
+    if moved && let Err(e) = move_no_replace(&target, source) {
+        return Err(CommitFailure {
+            path: target.clone(),
+            message: format!(
+                "{message}. Rename rollback failed ({e}); file is at {}. Draft annotations remain available.",
+                target.display()
+            ),
+        });
+    }
+    Err(CommitFailure {
+        path: source.into(),
+        message: format!("{message}. Original and draft annotations are unchanged."),
+    })
+}
+#[cfg(windows)]
+fn replace_file(target: &Path, replacement: &Path, backup: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    let wide = |p: &Path| {
+        p.as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect::<Vec<_>>()
+    };
+    let target = wide(target);
+    let replacement = wide(replacement);
+    let backup = wide(backup);
+    if unsafe {
+        windows_sys::Win32::Storage::FileSystem::ReplaceFileW(
+            target.as_ptr(),
+            replacement.as_ptr(),
+            backup.as_ptr(),
+            0,
+            std::ptr::null(),
+            std::ptr::null(),
+        )
+    } == 0
+    {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+#[cfg(not(windows))]
+fn replace_file(target: &Path, replacement: &Path, _backup: &Path) -> std::io::Result<()> {
+    fs::rename(replacement, target)
+}
+
 pub(crate) fn save(
     doc: &PdfDocument,
     source: &Path,

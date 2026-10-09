@@ -138,12 +138,30 @@ impl State {
             }
         };
         self.editor.operation += 1;
-        if self
-            .engine
-            .rename(self.document, self.editor.operation, name)
-        {
+        let save_edits =
+            self.editor.history.dirty() || !self.editor.history.annotations().is_empty();
+        let accepted = if save_edits {
+            self.engine.rename_and_save(
+                self.document,
+                self.editor.operation,
+                name,
+                self.editor.history.annotations().to_vec(),
+            )
+        } else {
+            self.engine
+                .rename(self.document, self.editor.operation, name)
+        };
+        if accepted {
+            self.editor.pending_revision = save_edits.then(|| self.editor.history.revision());
             ui.set_file_busy(true);
-            ui.set_file_message("Renaming PDF…".into());
+            ui.set_file_message(
+                if save_edits {
+                    "Saving edits and renaming PDF…"
+                } else {
+                    "Renaming PDF…"
+                }
+                .into(),
+            );
         } else {
             ui.set_file_message("A file operation is already running. Try again.".into());
         }
@@ -205,7 +223,7 @@ impl State {
             "rename-start" if ui.get_ready() && !ui.get_pending_open() => {
                 ui.set_rename_text(ui.get_document_name());
                 ui.set_rename_active(true);
-                ui.set_file_message("Enter to rename • Escape to cancel".into());
+                ui.set_file_message("Enter to save and rename • Escape to cancel".into());
                 ui.invoke_focus_rename();
             }
             "save-as" if ui.get_ready() => self.editor.save_dialog = true,
@@ -375,7 +393,20 @@ impl State {
                             .into(),
                     );
                     ui.set_rename_active(false);
-                    ui.set_file_message("PDF renamed.".into());
+                    let saved =
+                        self.editor.pending_revision == Some(self.editor.history.revision());
+                    if saved {
+                        self.editor.history.mark_saved();
+                    }
+                    self.editor.pending_revision = None;
+                    ui.set_file_message(
+                        if saved {
+                            "PDF saved and renamed."
+                        } else {
+                            "PDF renamed."
+                        }
+                        .into(),
+                    );
                     ui.invoke_focus_document();
                 } else {
                     if self.editor.pending_revision == Some(self.editor.history.revision()) {

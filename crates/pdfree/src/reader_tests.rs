@@ -340,6 +340,7 @@ fn editing_flows(state: &Rc<RefCell<State>>, ui: &AppWindow, window: &Rc<Minimal
     });
     assert!(!ui.get_rename_active());
     assert!(source.exists());
+    assert_eq!(std::fs::read(&source).unwrap(), original);
     state.borrow_mut().action(ui, "rename-start");
     ui.set_rename_text("Renamed document".into());
     ui.window().dispatch_event(WindowEvent::KeyPressed {
@@ -352,7 +353,10 @@ fn editing_flows(state: &Rc<RefCell<State>>, ui: &AppWindow, window: &Rc<Minimal
     let renamed = directory.join("Renamed document.pdf");
     assert!(renamed.exists() && !source.exists());
     assert_eq!(ui.get_document_name(), "Renamed document.pdf");
-    assert!(ui.get_dirty_document());
+    assert!(
+        !ui.get_dirty_document(),
+        "renaming must save current annotations"
+    );
     assert_eq!(state.borrow().editor.history.annotations().len(), 1);
     crate::capture::snapshot(ui, "annotation-renamed").unwrap();
 
@@ -376,6 +380,14 @@ fn editing_flows(state: &Rc<RefCell<State>>, ui: &AppWindow, window: &Rc<Minimal
     assert!(
         matches!(&state.borrow().editor.history.annotations()[1], viewer_core::Annotation::Note{text,..} if text.starts_with("Edited note"))
     );
+    // Confirming the current filename also commits new notes without losing history.
+    state.borrow_mut().action(ui, "rename-start");
+    state.borrow_mut().rename(ui, "Renamed document.pdf".into());
+    wait(&mut state.borrow_mut(), ui, |_, ui| !ui.get_file_busy());
+    assert!(!ui.get_dirty_document());
+    assert_eq!(state.borrow().editor.history.annotations().len(), 2);
+    let original = std::fs::read(&renamed).unwrap();
+    std::fs::write(directory.join("rename-checkpoint.pdf"), &original).unwrap();
     let target = directory.join("annotated.pdf");
     state.borrow_mut().save_as(ui, target.clone());
     wait(&mut state.borrow_mut(), ui, |_, ui| !ui.get_file_busy());
