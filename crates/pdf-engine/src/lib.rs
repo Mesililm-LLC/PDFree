@@ -1,5 +1,6 @@
 //! MuPDF ownership and background rendering boundary.
 mod coordinator;
+mod files;
 mod raster;
 mod reader;
 
@@ -14,7 +15,7 @@ use std::{
     thread::{self, JoinHandle},
     time::Duration,
 };
-use viewer_core::{PageSize, PageText, PixelTile, RenderRequest, SearchHit, TileKey};
+use viewer_core::{Annotation, PageSize, PageText, PixelTile, RenderRequest, SearchHit, TileKey};
 
 pub const NATIVE_STORE_LIMIT_MIB: usize = 256;
 
@@ -23,6 +24,25 @@ pub struct DocumentInfo {
     pub pages: usize,
     pub first_page: PageSize,
     pub can_copy: bool,
+    pub can_annotate: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FileAction {
+    SaveAs,
+    Rename,
+}
+struct FileCommand {
+    document: u64,
+    operation: u64,
+    action: FileCommandAction,
+}
+enum FileCommandAction {
+    SaveAs {
+        target: PathBuf,
+        annotations: Vec<Annotation>,
+    },
+    Rename(String),
 }
 
 #[derive(Clone, Debug)]
@@ -47,6 +67,23 @@ impl std::error::Error for EngineError {}
 
 #[derive(Debug)]
 pub enum Event {
+    FileDone {
+        document: u64,
+        operation: u64,
+        path: PathBuf,
+        kind: FileAction,
+    },
+    FileError {
+        document: u64,
+        operation: u64,
+        message: String,
+    },
+    Notes {
+        document: u64,
+        page: usize,
+        notes: Vec<Annotation>,
+        truncated: bool,
+    },
     Text {
         document: u64,
         page: usize,
@@ -120,6 +157,8 @@ struct Desired {
     text: Option<(u64, Vec<usize>)>,
     thumbnails: Option<(u64, Vec<usize>)>,
     search: Option<(u64, u64, String)>,
+    notes: Option<(u64, Vec<usize>)>,
+    file: Option<FileCommand>,
 }
 
 struct Shared {
@@ -128,6 +167,7 @@ struct Shared {
     generation: AtomicU64,
     search: AtomicU64,
     stopping: AtomicBool,
+    file_busy: AtomicBool,
 }
 
 impl Shared {
@@ -156,6 +196,7 @@ impl Engine {
             generation: AtomicU64::new(0),
             search: AtomicU64::new(0),
             stopping: AtomicBool::new(false),
+            file_busy: AtomicBool::new(false),
         });
         let (wake, receive) = bounded(1);
         let (send, events) = bounded(64);
@@ -196,6 +237,7 @@ impl Engine {
         desired.text = None;
         desired.thumbnails = None;
         desired.search = None;
+        desired.notes = None;
         drop(desired);
         let _ = self.wake.try_send(());
     }
@@ -204,6 +246,48 @@ impl Engine {
         self.shared.desired.lock().unwrap().text =
             Some((document, pages.into_iter().take(16).collect()));
         let _ = self.wake.try_send(());
+    }
+
+    pub fn note_pages(&self, document: u64, pages: Vec<usize>) {
+        self.shared.desired.lock().unwrap().notes =
+            Some((document, pages.into_iter().take(16).collect()));
+        let _ = self.wake.try_send(());
+    }
+    fn file(&self, command: FileCommand) -> bool {
+        if self
+            .shared
+            .file_busy
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return false;
+        }
+        self.shared.desired.lock().unwrap().file = Some(command);
+        let _ = self.wake.try_send(());
+        true
+    }
+    pub fn save_as(
+        &self,
+        document: u64,
+        operation: u64,
+        target: PathBuf,
+        annotations: Vec<Annotation>,
+    ) -> bool {
+        self.file(FileCommand {
+            document,
+            operation,
+            action: FileCommandAction::SaveAs {
+                target,
+                annotations,
+            },
+        })
+    }
+    pub fn rename(&self, document: u64, operation: u64, name: String) -> bool {
+        self.file(FileCommand {
+            document,
+            operation,
+            action: FileCommandAction::Rename(name),
+        })
     }
 
     pub fn thumbnails(&self, document: u64, pages: Vec<usize>) {
@@ -266,6 +350,7 @@ mod request_tests {
                 generation: AtomicU64::new(1),
                 search: AtomicU64::new(0),
                 stopping: AtomicBool::new(false),
+                file_busy: AtomicBool::new(false),
             }),
             wake,
             events,
@@ -273,14 +358,19 @@ mod request_tests {
         };
         engine.text_pages(1, (0..10_000).collect());
         engine.thumbnails(1, (0..10_000).collect());
+        engine.note_pages(1, (0..10_000).collect());
         {
             let desired = engine.shared.desired.lock().unwrap();
             assert_eq!(desired.text.as_ref().unwrap().1.len(), 16);
             assert_eq!(desired.thumbnails.as_ref().unwrap().1.len(), 32);
+            assert_eq!(desired.notes.as_ref().unwrap().1.len(), 16);
         }
         engine.text_pages(1, vec![99]);
         engine.thumbnails(1, vec![98]);
         engine.search(1, 10, "x".repeat(100_000));
+        assert!(engine.rename(1, 1, "first.pdf".into()));
+        assert!(!engine.rename(1, 2, "second.pdf".into()));
+        assert!(!engine.save_as(1, 3, PathBuf::from("third.pdf"), vec![]));
         let desired = engine.shared.desired.lock().unwrap();
         assert_eq!(desired.text.as_ref().unwrap().1, vec![99]);
         assert_eq!(desired.thumbnails.as_ref().unwrap().1, vec![98]);

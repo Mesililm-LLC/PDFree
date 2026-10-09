@@ -1,9 +1,10 @@
-import { Button, LineEdit, ScrollView, Spinner, Palette } from "std-widgets.slint";
+import { Button, LineEdit, TextEdit, ScrollView, Spinner, Palette } from "std-widgets.slint";
 
 export struct PageSurface { x: float, y: float, w: float, h: float, number: int }
 export struct TileSurface { pixels: image, x: float, y: float, w: float, h: float }
 export struct OverlaySurface { x: float, y: float, w: float, h: float, selected: bool }
 export struct ThumbnailSurface { number: int, pixels: image }
+export struct AnnotationSurface { x: float, y: float, w: float, h: float, kind: int, label: string, index: int }
 
 export component AppWindow inherits Window {
     init => { Palette.color-scheme = ColorScheme.light; }
@@ -21,6 +22,20 @@ export component AppWindow inherits Window {
     in-out property <bool> password-required: false;
     in-out property <string> password;
     in-out property <bool> can-copy: false;
+    in-out property <bool> can-annotate: false;
+    in-out property <bool> dirty-document: false;
+    in-out property <bool> can-undo: false;
+    in-out property <bool> can-redo: false;
+    in-out property <bool> file-busy: false;
+    in-out property <bool> rename-active: false;
+    in-out property <string> rename-text;
+    in-out property <string> file-message;
+    in-out property <bool> note-visible: false;
+    in-out property <bool> note-placement: false;
+    in-out property <bool> note-read-only: false;
+    in-out property <string> note-text;
+    in-out property <bool> pending-open: false;
+    in-out property <bool> pending-close: false;
     in-out property <string> selection-text;
     in-out property <bool> search-visible: false;
     in-out property <string> search-query;
@@ -42,12 +57,17 @@ export component AppWindow inherits Window {
     in property <[TileSurface]> tiles;
     in property <[OverlaySurface]> overlays;
     in property <[ThumbnailSurface]> thumbnails;
+    in property <[AnnotationSurface]> annotations;
     callback action(string);
     callback navigate(string);
     callback password-submit(string);
     callback search(string);
     callback select-text(int, float, float, int);
     callback thumbnail-click(int);
+    callback rename-submit(string);
+    callback note-submit(string);
+    callback annotation-click(int);
+    callback page-point(int, float, float);
 
     public function copy-selection() {
         if root.can-copy && root.selection-text != "" {
@@ -57,6 +77,8 @@ export component AppWindow inherits Window {
     }
     public function focus-document() { keys.focus(); }
     public function focus-search() { search-entry.focus(); }
+    public function focus-rename() { rename-edit.focus(); rename-edit.select-all(); }
+    public function focus-note() { note-edit.focus(); }
     clipboard-text := LineEdit {
         visible: false;
         read-only: true;
@@ -66,7 +88,15 @@ export component AppWindow inherits Window {
     forward-focus: keys;
     keys := FocusScope {
         key-pressed(event) => {
+            if root.pending-open || root.note-visible {
+                if event.text == Key.Escape { if root.pending-open { root.action("pending-cancel"); } else { root.action("cancel-note"); } }
+                return accept;
+            }
+            if event.text == Key.Escape && root.note-placement { root.action("cancel-note"); return accept; }
             if event.modifiers.control {
+                if event.text == "s" || event.text == "S" { if root.ready && !root.file-busy && !root.rename-active { root.action("save-as"); } return accept; }
+                if event.text == "z" || event.text == "Z" { if event.modifiers.shift { root.action("redo"); } else { root.action("undo"); } return accept; }
+                if event.text == "y" || event.text == "Y" { root.action("redo"); return accept; }
                 if event.text == "o" || event.text == "O" { root.action("open"); return accept; }
                 if event.text == "f" || event.text == "F" { root.action("find"); return accept; }
                 if event.text == "c" || event.text == "C" { root.copy-selection(); return accept; }
@@ -92,14 +122,46 @@ export component AppWindow inherits Window {
                     spacing: 14px;
                     Text { text: "PDFree"; color: #146bca; font-size: 23px; font-weight: 700; }
                     Rectangle { width: 1px; background: #e3e8ef; }
-                    Text { text: root.document-name; color: #526171; overflow: elide; horizontal-stretch: 1; vertical-alignment: center; }
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        if !root.rename-active: Text { width: 100%; height: 100%; text: root.document-name; color: #526171; overflow: elide; vertical-alignment: center; }
+                        if !root.rename-active: TouchArea { enabled: root.ready && !root.file-busy; double-clicked => { root.action("rename-start"); } }
+                        rename-edit := LineEdit {
+                            width: 100%; height: 100%; visible: root.rename-active;
+                            text <=> root.rename-text;
+                            enabled: !root.file-busy;
+                            accepted => { root.rename-submit(self.text); }
+                            key-pressed(event) => { if event.text == Key.Escape { root.action("rename-cancel"); return accept; } return reject; }
+                        }
+                    }
+                    Text { visible: root.dirty-document; text: "Unsaved"; color: #a16305; vertical-alignment: center; font-size: 12px; }
                     Button { text: "Pages"; enabled: root.ready; clicked => { root.action("thumbnails"); } }
                     Button { text: "Find"; enabled: root.ready; clicked => { root.action("find"); } }
                     Button { text: "Copy selection"; enabled: root.can-copy && root.selection-text != ""; clicked => { root.copy-selection(); } }
-                    Button { text: "Open PDF"; clicked => { root.action("open"); } }
+                    Button { text: "Open PDF"; enabled: !root.file-busy && !root.rename-active; clicked => { root.action("open"); } }
                 }
             }
             Rectangle { height: 1px; background: #e3e8ef; }
+            Rectangle {
+                height: 44px;
+                background: white;
+                HorizontalLayout {
+                    padding-left: 16px; padding-right: 16px; padding-top: 5px; padding-bottom: 5px; spacing: 8px;
+                    Button { text: "Highlight"; enabled: root.can-annotate && root.selection-text != "" && !root.file-busy; clicked => { root.action("annotate-highlight"); } }
+                    Button { text: root.note-placement ? "Cancel note" : "Add note"; enabled: root.can-annotate && !root.file-busy; clicked => { if root.note-placement { root.action("cancel-note"); } else { root.action("annotate-note"); } } }
+                    Button { text: "Undo"; enabled: root.can-undo && !root.file-busy; clicked => { root.action("undo"); } }
+                    Button { text: "Redo"; enabled: root.can-redo && !root.file-busy; clicked => { root.action("redo"); } }
+                    Rectangle { horizontal-stretch: 1; }
+                    Text { visible: root.note-placement; text: "Click a page to place your note"; color: #526171; vertical-alignment: center; font-size: 12px; }
+                    Button { text: root.file-busy ? "Saving…" : "Save As…"; enabled: root.ready && !root.file-busy && !root.rename-active; clicked => { root.action("save-as"); } }
+                }
+            }
+            Rectangle {
+                visible: root.rename-active || root.file-message != "";
+                height: self.visible ? 30px : 0px;
+                background: #fff8e8;
+                Text { x: 16px; width: parent.width - 32px; height: 100%; text: root.file-message != "" ? root.file-message : "Enter to rename the PDF • Esc to cancel"; color: #805715; overflow: elide; vertical-alignment: center; font-size: 12px; }
+            }
             Rectangle {
                 height: 52px;
                 background: #fafbfd;
@@ -190,6 +252,12 @@ export component AppWindow inherits Window {
                         source: tile.pixels;
                         image-fit: fill;
                     }
+                    for annotation in root.annotations: Rectangle {
+                        visible: annotation.kind == 0;
+                        x: annotation.x * 1px; y: annotation.y * 1px;
+                        width: annotation.w * 1px; height: annotation.h * 1px;
+                        background: #ffda326b;
+                    }
                     for overlay in root.overlays: Rectangle {
                         x: overlay.x * 1px; y: overlay.y * 1px;
                         width: overlay.w * 1px; height: overlay.h * 1px;
@@ -198,20 +266,35 @@ export component AppWindow inherits Window {
                     for page in root.pages: TouchArea {
                         x: page.x * 1px; y: page.y * 1px;
                         width: page.w * 1px; height: page.h * 1px;
-                        enabled: root.can-copy;
-                        mouse-cursor: text;
+                        enabled: root.can-copy || root.note-placement;
+                        mouse-cursor: root.note-placement ? crosshair : text;
                         pointer-event(event) => {
                             if event.button == PointerEventButton.left {
                                 if event.kind == PointerEventKind.down {
                                     root.focus-document();
-                                    root.select-text(page.number - 1, self.mouse-x / 1px, self.mouse-y / 1px, 0);
-                                } else if event.kind == PointerEventKind.up {
+                                    if root.note-placement { root.page-point(page.number - 1, self.mouse-x / 1px, self.mouse-y / 1px); }
+                                    else { root.select-text(page.number - 1, self.mouse-x / 1px, self.mouse-y / 1px, 0); }
+                                } else if event.kind == PointerEventKind.up && !root.note-placement && !root.note-visible {
                                     root.select-text(page.number - 1, self.mouse-x / 1px, self.mouse-y / 1px, 2);
                                 }
                             }
                         }
                         moved => {
-                            if self.pressed { root.select-text(page.number - 1, self.mouse-x / 1px, self.mouse-y / 1px, 1); }
+                            if self.pressed && !root.note-placement && !root.note-visible { root.select-text(page.number - 1, self.mouse-x / 1px, self.mouse-y / 1px, 1); }
+                        }
+                    }
+                    for annotation in root.annotations: Rectangle {
+                        visible: annotation.kind != 0;
+                        x: annotation.x * 1px; y: annotation.y * 1px;
+                        width: annotation.w * 1px; height: annotation.h * 1px;
+                        background: annotation.kind == 1 ? #ffe475 : transparent;
+                        border-radius: 3px;
+                        if annotation.kind == 1: Text { text: "✎"; width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center; color: #604900; }
+                        if annotation.kind != 0: TouchArea {
+                            mouse-cursor: pointer;
+                            accessible-role: AccessibleRole.button;
+                            accessible-label: annotation.label;
+                            clicked => { root.annotation-click(annotation.index); }
                         }
                     }
                 }
@@ -239,6 +322,49 @@ export component AppWindow inherits Window {
                     padding-left: 16px; padding-right: 16px;
                     Text { text: root.ready ? root.status : "Offline • Viewer prototype"; color: #607386; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1; }
                     Text { text: "Ctrl+O  Open    Ctrl +/−  Zoom    PgUp/PgDn  Navigate"; color: #7d8b99; font-size: 11px; vertical-alignment: center; }
+                }
+            }
+        }
+    }
+    Rectangle {
+        visible: root.note-visible || root.pending-open;
+        width: 100%; height: 100%; background: #172b4d70;
+        TouchArea { }
+        Rectangle {
+            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+            width: min(520px, parent.width - 40px);
+            height: root.pending-open ? 290px : 390px;
+            background: white; border-radius: 8px;
+            VerticalLayout {
+                padding: 20px; spacing: 14px;
+                Text { text: root.pending-open ? "Save your annotations?" : (root.note-read-only ? "Document note" : "Sticky note"); color: #223b54; font-size: 21px; font-weight: 600; }
+                if root.pending-open: Text { text: root.pending-close ? "This PDF has unsaved annotations. Save a copy before closing PDFree, or discard these changes." : "This PDF has unsaved annotations. Save a copy before opening another document, or discard these changes."; wrap: word-wrap; color: #526171; }
+                note-edit := TextEdit {
+                    visible: !root.pending-open;
+                    height: root.pending-open ? 0px : 190px;
+                    text <=> root.note-text; read-only: root.note-read-only;
+                    placeholder-text: "Write your note…";
+                    wrap: word-wrap;
+                    key-pressed(event) => {
+                        if event.text == Key.Escape { root.action("cancel-note"); return accept; }
+                        // The text editor owns typing shortcuts, including its undo history.
+                        return reject;
+                    }
+                }
+                if root.file-message != "": Text {
+                    text: root.file-message;
+                    color: #805715;
+                    wrap: word-wrap;
+                    font-size: 12px;
+                    vertical-stretch: 0;
+                }
+                HorizontalLayout {
+                    alignment: end; spacing: 8px;
+                    if root.pending-open: Button { text: "Cancel"; clicked => { root.action("pending-cancel"); } }
+                    if root.pending-open: Button { text: "Discard"; clicked => { root.action("pending-discard"); } }
+                    if root.pending-open: Button { text: root.file-busy ? "Saving…" : "Save As…"; enabled: !root.file-busy; clicked => { root.action("pending-save"); } }
+                    if !root.pending-open: Button { text: root.note-read-only ? "Close" : "Cancel"; clicked => { root.action("cancel-note"); } }
+                    if !root.pending-open && !root.note-read-only: Button { text: "Save note"; enabled: root.note-text != "" && !root.file-busy; clicked => { root.note-submit(root.note-text); } }
                 }
             }
         }

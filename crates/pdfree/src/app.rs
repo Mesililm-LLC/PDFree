@@ -12,6 +12,9 @@ use viewer_core::{Layout, PageSize, TileCache, TileKey, Viewport, clamp_zoom};
 #[path = "reader_tests.rs"]
 mod reader_tests;
 
+#[path = "editing.rs"]
+mod editing;
+
 pub struct State {
     engine: Engine,
     trace: Trace,
@@ -36,6 +39,7 @@ pub struct State {
     pub dialog_open: bool,
     tools: crate::features::ReaderTools,
     path: Option<PathBuf>,
+    editor: editing::Editor,
 }
 
 impl State {
@@ -69,6 +73,7 @@ impl State {
             dialog_open: false,
             tools: Default::default(),
             path: None,
+            editor: Default::default(),
         }
     }
 
@@ -77,6 +82,7 @@ impl State {
     }
 
     fn open_password(&mut self, ui: &AppWindow, path: PathBuf, password: Option<String>) {
+        self.reset_editor(ui);
         self.tools.reset(ui);
         self.path = Some(path.clone());
         self.document += 1;
@@ -150,6 +156,12 @@ impl State {
     }
 
     pub fn action(&mut self, ui: &AppWindow, action: &str) {
+        if ui.get_pending_open() && !action.starts_with("pending-") {
+            return;
+        }
+        if self.edit_action(ui, action) {
+            return;
+        }
         match action {
             "password-cancel" => {
                 // Replace any pending authentication with an invalidated document identity.
@@ -255,6 +267,7 @@ impl State {
                 break;
             };
             changed |= self.tools.event(ui, self.document, &event);
+            changed |= self.edit_event(ui, &event);
             match event {
                 Event::Opened {
                     document,
@@ -266,6 +279,7 @@ impl State {
                     ui.set_loading(false);
                     ui.set_ready(true);
                     ui.set_can_copy(info.can_copy);
+                    ui.set_can_annotate(info.can_annotate);
                     ui.set_password_required(false);
                     self.dirty = true;
                     self.trace.event("document_parsed", serde_json::json!({"pages":info.pages,"engine_ms":elapsed.as_secs_f64()*1000.0}));
@@ -315,6 +329,7 @@ impl State {
                     ui.set_loading(false);
                     if !matches!(error, EngineError::Render(_)) {
                         ui.set_ready(false);
+                        ui.set_can_annotate(false);
                     }
                     ui.set_status(
                         if matches!(
@@ -436,6 +451,7 @@ impl State {
         let last = *visible.end();
         let resident: Vec<usize> =
             (first.saturating_sub(2)..=(last + 2).min(self.sizes.len() - 1)).collect();
+        self.edit_refresh(ui, &resident);
         self.tools.refresh(
             ui,
             &self.engine,

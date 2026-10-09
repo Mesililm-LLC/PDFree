@@ -32,6 +32,14 @@ Raster cache: hard 128 MiB budget. UI image references are limited to the curren
 
 Deviation: mupdf 0.8.0 uses a fixed 256 MiB shared native-store threshold and has no public setter. The requested 64 MiB native target is **not achieved**. The threshold is not a process-memory cap and live native references can exceed it. Avoid layout-dependent access to private native handles merely to change this number.
 
+## Annotation and file transactions
+
+The UI owns engine-neutral highlight and note drafts and a bounded revision journal. Native baseline documents stay unchanged: Save As clones the baseline in memory, applies the current draft exactly once, retains encryption, writes and synchronizes a temporary file in the destination folder, reopens it, then publishes with a no-replace Windows move. The original document remains open; successful copies checkpoint the current revision. Repeated saves therefore do not duplicate drafts, and undo remains available after saving.
+
+Save and rename share one noncoalescing pending slot and carry document and operation identities. The coordinator owns the password only for the current session to authenticate encrypted clones/reopens. Rename waits for active display-list work, releases native file handles, moves within the same folder without replacing another file, and reopens the document. A reopen failure attempts rollback and reports the actual remaining path. Rename does not alter annotation history. Unsaved drafts require Save As, Discard, or Cancel before opening another file or closing.
+
+Existing Text annotations are loaded lazily for at most 16 nearby pages, 256 notes and 256 KiB of note text per page, with truncation disclosed. They are read-only in this milestone. New drafts are limited to 2,000 annotations, 1,000 rectangles per highlight and 16,384 UTF-8 bytes per note; history retains at most 200 commands and 32 MiB of snapshot accounting. This accounting excludes native clone/write buffers and UI models.
+
 ## Windows build findings
 
 The installed Visual Studio 18 toolset is v145. mupdf-sys 0.8.0 defaults incorrectly to v142 on this installation; its documented environment override selects v145. MSVC's C headers omit `max_align_t`, though its C++ `cstddef` defines it as `double`. `scripts/msvc-bindgen.h` supplies the same definition and an allowlisted alias for binding generation only. Dependency sources and alignment assertions remain intact.

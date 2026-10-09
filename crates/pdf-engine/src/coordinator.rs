@@ -1,4 +1,4 @@
-use crate::{DocumentInfo, EngineError, Event, Shared, raster};
+use crate::{DocumentInfo, EngineError, Event, FileAction, FileCommandAction, Shared, raster};
 use crossbeam_channel::{Receiver, Sender, bounded};
 use mupdf::{
     DisplayList, Document,
@@ -81,12 +81,17 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
     drop(job_rx);
     let mut document: Option<PdfDocument> = None;
     let mut can_copy = false;
+    let mut source_path = std::path::PathBuf::new();
+    let mut session_password: Option<String> = None;
+    let mut notes_queue = std::collections::VecDeque::new();
+    let mut notes_cache = HashMap::new();
     let mut reader = crate::reader::Reader::default();
     let mut document_id = 0;
     let mut geometry: Vec<Option<PageSize>> = Vec::new();
     let mut cursor = 0;
     let mut lists: HashMap<usize, Arc<DisplayList>> = HashMap::new();
     let mut inflight = HashSet::new();
+    let mut deferred_results = std::collections::VecDeque::new();
     let mut queue = RenderQueue::new(128);
 
     while !shared.stopping.load(Ordering::Acquire) {
@@ -101,6 +106,10 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
             geometry.clear();
             queue.replace(Vec::new());
             document_id = open.document;
+            source_path = open.path.clone();
+            session_password = open.password.clone();
+            notes_queue.clear();
+            notes_cache.clear();
             let started = Instant::now();
             let load = || -> Result<(PdfDocument, DocumentInfo), EngineError> {
                 let path = open.path.to_str().ok_or_else(|| {
@@ -138,6 +147,7 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                     .map_err(|e| EngineError::InvalidDocument(e.to_string()))?;
                 let info = DocumentInfo {
                     can_copy: doc.permissions().contains(Permission::COPY),
+                    can_annotate: doc.permissions().contains(Permission::ANNOTATE),
                     pages: count as usize,
                     first_page: PageSize::new(bounds.width(), bounds.height()),
                 };
@@ -173,6 +183,159 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                 }
             }
         }
+        if let Some(command) = desired.file {
+            let result = if command.document != document_id
+                || !shared.current_document(command.document)
+            {
+                Err("The document changed before the file operation started".into())
+            } else if let Some(doc) = document.as_ref() {
+                match command.action {
+                    FileCommandAction::SaveAs {
+                        target,
+                        annotations,
+                    } => crate::files::save(
+                        doc,
+                        &source_path,
+                        session_password.as_deref(),
+                        &target,
+                        &annotations,
+                        || shared.current_document(command.document),
+                    )
+                    .map(|path| (path, FileAction::SaveAs)),
+                    FileCommandAction::Rename(name) => {
+                        match crate::files::renamed_path(&source_path, &name) {
+                            Err(e) => Err(e),
+                            Ok(target) if target == source_path => {
+                                Ok((source_path.clone(), FileAction::Rename))
+                            }
+                            Ok(target) => {
+                                // Display lists on workers can retain image streams from the
+                                // source file. Finish bounded raster work before releasing it.
+                                while deferred_results.len() < inflight.len()
+                                    && !shared.stopping.load(Ordering::Acquire)
+                                {
+                                    match results.recv_timeout(Duration::from_millis(10)) {
+                                        Ok(result) => deferred_results.push_back(result),
+                                        Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
+                                        Err(_) => break,
+                                    }
+                                }
+                                if !shared.current_document(command.document) {
+                                    Err("Document changed before rename completed".into())
+                                } else {
+                                    // Release all page/document handles before Windows moves the open file.
+                                    lists.clear();
+                                    notes_cache.clear();
+                                    document = None;
+                                    let moved =
+                                        crate::files::move_no_replace(&source_path, &target);
+                                    let reopen_path = if moved.is_ok() {
+                                        target.clone()
+                                    } else {
+                                        source_path.clone()
+                                    };
+                                    let reopened = crate::files::open(
+                                        &reopen_path,
+                                        session_password.as_deref(),
+                                    );
+                                    match reopened {
+                                        Ok(doc) => {
+                                            document = Some(doc);
+                                            match moved {
+                                                Ok(()) => {
+                                                    source_path = target.clone();
+                                                    Ok((target, FileAction::Rename))
+                                                }
+                                                Err(e) => Err(format!(
+                                                    "Could not rename PDF: {e}. Original remains open."
+                                                )),
+                                            }
+                                        }
+                                        Err(e) => {
+                                            if moved.is_err() {
+                                                Err(format!(
+                                                    "Rename failed and the original PDF could not be reopened: {e}. File remains at {}. Use Open to recover.",
+                                                    source_path.display()
+                                                ))
+                                            } else {
+                                                match crate::files::move_no_replace(
+                                                    &target,
+                                                    &source_path,
+                                                ) {
+                                                    Ok(()) => match crate::files::open(
+                                                        &source_path,
+                                                        session_password.as_deref(),
+                                                    ) {
+                                                        Ok(doc) => {
+                                                            document = Some(doc);
+                                                            Err(format!(
+                                                                "Renamed PDF could not be reopened ({e}); rename was rolled back. Original remains open."
+                                                            ))
+                                                        }
+                                                        Err(rollback_error) => Err(format!(
+                                                            "Rename was rolled back but reopening failed: {rollback_error}. File remains at {}. Use Open to recover.",
+                                                            source_path.display()
+                                                        )),
+                                                    },
+                                                    Err(rollback_error) => {
+                                                        source_path = target;
+                                                        Err(format!(
+                                                            "Rename succeeded but reopening failed ({e}) and rollback failed ({rollback_error}). File is at {}. Use Open to recover.",
+                                                            source_path.display()
+                                                        ))
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                Err("No PDF is open".into())
+            };
+            shared.file_busy.store(false, Ordering::Release);
+            let event = match result {
+                Ok((path, kind)) => Event::FileDone {
+                    document: command.document,
+                    operation: command.operation,
+                    path,
+                    kind,
+                },
+                Err(message) => Event::FileError {
+                    document: command.document,
+                    operation: command.operation,
+                    message,
+                },
+            };
+            emit(&shared, &events, event);
+            if document.is_none() && command.document == document_id {
+                emit(
+                    &shared,
+                    &events,
+                    Event::Error {
+                        document: document_id,
+                        error: EngineError::InvalidDocument(format!(
+                            "The PDF at {} could not be reopened. Use Open to recover.",
+                            source_path.display()
+                        )),
+                    },
+                );
+            }
+        }
+        if let Some((id, pages)) = desired.notes
+            && id == document_id
+        {
+            let pages: Vec<_> = pages
+                .into_iter()
+                .filter(|p| *p < geometry.len())
+                .take(16)
+                .collect();
+            notes_cache.retain(|p, _| pages.contains(p));
+            notes_queue = pages.into();
+        }
         if let Some((id, pages)) = desired.text
             && id == document_id
         {
@@ -200,7 +363,10 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                     .collect(),
             );
         }
-        while let Ok(result) = results.try_recv() {
+        while let Some(result) = deferred_results
+            .pop_front()
+            .or_else(|| results.try_recv().ok())
+        {
             inflight.remove(&(
                 result.request.key,
                 result.request.generation,
@@ -274,6 +440,40 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
             }
         }
         if let Some(doc) = &document {
+            if let Some(page) = notes_queue.pop_front() {
+                let result = notes_cache
+                    .get(&page)
+                    .cloned()
+                    .map(Ok)
+                    .unwrap_or_else(|| crate::files::notes(doc, page));
+                match result {
+                    Ok((notes, truncated)) => {
+                        notes_cache.insert(page, (notes.clone(), truncated));
+                        emit(
+                            &shared,
+                            &events,
+                            Event::Notes {
+                                document: document_id,
+                                page,
+                                notes,
+                                truncated,
+                            },
+                        );
+                    }
+                    Err(message) => {
+                        emit(
+                            &shared,
+                            &events,
+                            Event::ReaderError {
+                                document: document_id,
+                                operation: "notes",
+                                page: Some(page),
+                                message,
+                            },
+                        );
+                    }
+                }
+            }
             while inflight.len() < workers {
                 let Some(request) = queue.pop() else {
                     break;

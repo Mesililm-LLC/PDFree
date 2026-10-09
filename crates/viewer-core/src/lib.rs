@@ -1,9 +1,11 @@
 //! Engine-independent viewport, cache, and request scheduling.
 mod cache;
+mod editing;
 mod geometry;
 mod queue;
 mod text;
 pub use cache::*;
+pub use editing::*;
 pub use geometry::*;
 pub use queue::*;
 pub use text::*;

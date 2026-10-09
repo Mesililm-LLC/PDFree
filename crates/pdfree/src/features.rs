@@ -19,6 +19,17 @@ pub struct ReaderTools {
 }
 
 impl ReaderTools {
+    pub fn selected_highlight(&self) -> Option<viewer_core::Annotation> {
+        (!self.selection.rects.is_empty()).then(|| viewer_core::Annotation::Highlight {
+            page: self.selection_page,
+            rects: self.selection.rects.clone(),
+        })
+    }
+    pub fn clear_selection(&mut self, ui: &AppWindow) {
+        self.selection = TextSelection::default();
+        self.drag = None;
+        ui.set_selection_text("".into());
+    }
     #[cfg(test)]
     pub fn test_text(&self, page: usize) -> Option<Arc<PageText>> {
         self.text.get(&page).cloned()

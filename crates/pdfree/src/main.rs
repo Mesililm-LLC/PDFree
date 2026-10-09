@@ -9,6 +9,14 @@ use slint::ComponentHandle;
 use std::{cell::RefCell, path::PathBuf, rc::Rc, time::Duration};
 slint::include_modules!();
 
+enum DialogResult {
+    Open(Option<PathBuf>),
+    Save {
+        document: u64,
+        path: Option<PathBuf>,
+    },
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let started = std::time::Instant::now();
     let mut args = std::env::args_os().skip(1);
@@ -53,6 +61,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     let state = Rc::new(RefCell::new(app::State::new(trace.clone(), benchmark)));
     let (dialog_send, dialog_receive) = std::sync::mpsc::sync_channel(1);
+    let timer_dialog_send = dialog_send.clone();
     let action_state = state.clone();
     let action_ui = ui.as_weak();
     ui.on_action(move |action| {
@@ -60,7 +69,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             return;
         };
         if action == "open" {
-            if action_state.borrow().dialog_open {
+            if action_state.borrow().dialog_open
+                || ui.get_file_busy()
+                || ui.get_rename_active()
+                || ui.get_note_visible()
+                || ui.get_pending_open()
+            {
                 return;
             }
             action_state.borrow_mut().dialog_open = true;
@@ -70,7 +84,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .set_title("Open PDF")
                     .add_filter("PDF documents", &["pdf"])
                     .pick_file();
-                let _ = send.send(path);
+                let _ = send.send(DialogResult::Open(path));
             });
         } else {
             action_state.borrow_mut().action(&ui, action.as_str());
@@ -123,6 +137,49 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             thumbnail_state.borrow_mut().navigate(&ui, page as usize);
         }
     });
+    let rename_state = state.clone();
+    let rename_ui = ui.as_weak();
+    ui.on_rename_submit(move |name| {
+        if let Some(ui) = rename_ui.upgrade() {
+            rename_state.borrow_mut().rename(&ui, name.to_string());
+        }
+    });
+    let note_state = state.clone();
+    let note_ui = ui.as_weak();
+    ui.on_note_submit(move |text| {
+        if let Some(ui) = note_ui.upgrade() {
+            note_state.borrow_mut().note_submit(&ui, text.to_string());
+        }
+    });
+    let point_state = state.clone();
+    let point_ui = ui.as_weak();
+    ui.on_page_point(move |page, x, y| {
+        if let Some(ui) = point_ui.upgrade()
+            && page >= 0
+        {
+            point_state
+                .borrow_mut()
+                .page_point(&ui, page as usize, x, y);
+        }
+    });
+    let annotation_state = state.clone();
+    let annotation_ui = ui.as_weak();
+    ui.on_annotation_click(move |index| {
+        if let Some(ui) = annotation_ui.upgrade() {
+            annotation_state.borrow_mut().annotation_click(&ui, index);
+        }
+    });
+    let close_state = state.clone();
+    let close_ui = ui.as_weak();
+    ui.window().on_close_requested(move || {
+        if let Some(ui) = close_ui.upgrade()
+            && !close_state.borrow_mut().request_close(&ui)
+        {
+            slint::CloseRequestResponse::KeepWindowShown
+        } else {
+            slint::CloseRequestResponse::HideWindow
+        }
+    });
     let timer = slint::Timer::default();
     let timer_ui = ui.as_weak();
     let timer_state = state.clone();
@@ -134,19 +191,46 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return;
             };
             let mut state = timer_state.borrow_mut();
-            if let Ok(path) = dialog_receive.try_recv() {
+            if let Ok(result) = dialog_receive.try_recv() {
                 state.dialog_open = false;
-                if let Some(path) = path {
-                    state.open(&ui, path);
+                match result {
+                    DialogResult::Open(Some(path)) => state.request_open(&ui, path),
+                    DialogResult::Open(None) => {}
+                    DialogResult::Save { document, path } => {
+                        state.save_dialog_result(&ui, document, path);
+                    }
                 }
             }
             state.tick(&ui);
+            if !state.dialog_open
+                && let Some((document, suggested_path)) = state.take_save_dialog()
+            {
+                state.dialog_open = true;
+                let send = timer_dialog_send.clone();
+                std::thread::spawn(move || {
+                    let mut dialog = rfd::FileDialog::new()
+                        .set_title("Save annotated PDF as")
+                        .add_filter("PDF documents", &["pdf"]);
+                    if let Some(name) = suggested_path.file_name() {
+                        dialog = dialog.set_file_name(name.to_string_lossy());
+                    }
+                    if let Some(directory) = suggested_path.parent() {
+                        dialog = dialog.set_directory(directory);
+                    }
+                    let path = dialog.save_file();
+                    let _ = send.send(DialogResult::Save { document, path });
+                });
+            }
+            if state.take_close_request() {
+                let _ = ui.hide();
+                let _ = slint::quit_event_loop();
+            }
         },
     );
     ui.show()?;
     trace.event("window_show_requested", serde_json::json!({}));
     if let Some(path) = path {
-        state.borrow_mut().open(&ui, path);
+        state.borrow_mut().request_open(&ui, path);
     }
     slint::run_event_loop()?;
     timer.stop();

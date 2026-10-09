@@ -219,5 +219,201 @@ fn reader_flows_use_real_native_text_pointer_events_and_a_mock_clipboard() {
     assert!(!ui.get_ready());
     state.borrow_mut().open(&ui, fixture("text.pdf"));
     wait(&mut state.borrow_mut(), &ui, |_, ui| ui.get_ready());
+    editing_flows(&state, &ui, &window);
     ui.hide().unwrap();
+}
+
+fn editing_flows(state: &Rc<RefCell<State>>, ui: &AppWindow, window: &Rc<MinimalSoftwareWindow>) {
+    let root =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../benchmarks/runs/annotations-tests");
+    let directory = root.join(format!(
+        "{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("source.pdf");
+    std::fs::copy(fixture("text.pdf"), &source).unwrap();
+    let original = std::fs::read(&source).unwrap();
+    state.borrow_mut().open(ui, source.clone());
+    wait(&mut state.borrow_mut(), ui, |state, ui| {
+        ui.get_ready() && state.tools.test_text(0).is_some()
+    });
+    let callback_state = state.clone();
+    let weak = ui.as_weak();
+    ui.on_action(move |action| {
+        callback_state
+            .borrow_mut()
+            .action(&weak.upgrade().unwrap(), action.as_str())
+    });
+    let callback_state = state.clone();
+    let weak = ui.as_weak();
+    ui.on_rename_submit(move |name| {
+        callback_state
+            .borrow_mut()
+            .rename(&weak.upgrade().unwrap(), name.to_string())
+    });
+    let callback_state = state.clone();
+    let weak = ui.as_weak();
+    ui.on_note_submit(move |text| {
+        callback_state
+            .borrow_mut()
+            .note_submit(&weak.upgrade().unwrap(), text.to_string())
+    });
+    let callback_state = state.clone();
+    let weak = ui.as_weak();
+    ui.on_page_point(move |page, x, y| {
+        callback_state
+            .borrow_mut()
+            .page_point(&weak.upgrade().unwrap(), page as usize, x, y)
+    });
+    let text = state.borrow().tools.test_text(0).unwrap();
+    let a = text.glyphs[0].bounds;
+    let b = text.glyphs[5].bounds;
+    state.borrow_mut().select_text(
+        ui,
+        0,
+        a.left * 96.0 / 72.0,
+        (a.top + a.bottom) / 2.0 * 96.0 / 72.0,
+        0,
+    );
+    state.borrow_mut().select_text(
+        ui,
+        0,
+        b.right * 96.0 / 72.0,
+        (b.top + b.bottom) / 2.0 * 96.0 / 72.0,
+        2,
+    );
+    // Exercise text that crosses a page edge: only visible rectangles become drafts.
+    let original_width = state.borrow().sizes[0].width;
+    let clipped_width = (a.left + b.right) / 2.0;
+    state.borrow_mut().sizes[0].width = clipped_width;
+    state.borrow_mut().action(ui, "annotate-highlight");
+    if let viewer_core::Annotation::Highlight { rects, .. } =
+        &state.borrow().editor.history.annotations()[0]
+    {
+        assert!(
+            rects
+                .iter()
+                .all(|r| r.right <= clipped_width && r.left >= 0.0)
+        );
+    } else {
+        panic!("expected clipped highlight");
+    }
+    state.borrow_mut().sizes[0].width = original_width;
+    assert!(ui.get_dirty_document());
+    assert_eq!(state.borrow().editor.history.annotations().len(), 1);
+    state.borrow_mut().action(ui, "undo");
+    assert!(!ui.get_dirty_document());
+    state.borrow_mut().action(ui, "redo");
+    assert!(ui.get_dirty_document());
+
+    let mut buffer = vec![slint::Rgb8Pixel::default(); 1770 * 1275];
+    window.draw_if_needed(|renderer| {
+        renderer.render(&mut buffer, 1770);
+    });
+    let click = |position| {
+        ui.window().dispatch_event(WindowEvent::PointerPressed {
+            position,
+            button: PointerEventButton::Left,
+        });
+        ui.window().dispatch_event(WindowEvent::PointerReleased {
+            position,
+            button: PointerEventButton::Left,
+        });
+    };
+    click(slint::LogicalPosition::new(200.0, 32.0));
+    click(slint::LogicalPosition::new(200.0, 32.0));
+    assert!(
+        ui.get_rename_active(),
+        "document-name double click should enter inline rename"
+    );
+    crate::capture::snapshot(ui, "annotation-inline-rename").unwrap();
+    ui.set_rename_text("cancelled".into());
+    ui.window().dispatch_event(WindowEvent::KeyPressed {
+        text: Key::Escape.into(),
+    });
+    ui.window().dispatch_event(WindowEvent::KeyReleased {
+        text: Key::Escape.into(),
+    });
+    assert!(!ui.get_rename_active());
+    assert!(source.exists());
+    state.borrow_mut().action(ui, "rename-start");
+    ui.set_rename_text("Renamed document".into());
+    ui.window().dispatch_event(WindowEvent::KeyPressed {
+        text: Key::Return.into(),
+    });
+    ui.window().dispatch_event(WindowEvent::KeyReleased {
+        text: Key::Return.into(),
+    });
+    wait(&mut state.borrow_mut(), ui, |_, ui| !ui.get_file_busy());
+    let renamed = directory.join("Renamed document.pdf");
+    assert!(renamed.exists() && !source.exists());
+    assert_eq!(ui.get_document_name(), "Renamed document.pdf");
+    assert!(ui.get_dirty_document());
+    assert_eq!(state.borrow().editor.history.annotations().len(), 1);
+    crate::capture::snapshot(ui, "annotation-renamed").unwrap();
+
+    state.borrow_mut().action(ui, "annotate-note");
+    state.borrow_mut().page_point(ui, 0, 150.0, 220.0);
+    assert!(ui.get_note_visible());
+    ui.invoke_note_submit("   ".into());
+    assert!(ui.get_note_visible());
+    assert!(ui.get_file_message().contains("16,384"));
+    ui.invoke_note_submit("A note — café 日本語\nSecond line".into());
+    assert!(!ui.get_note_visible());
+    assert_eq!(state.borrow().editor.history.annotations().len(), 2);
+    state.borrow_mut().annotation_click(ui, 1);
+    assert!(ui.get_note_visible() && !ui.get_note_read_only());
+    ui.invoke_note_submit("Edited note — café 日本語\nSecond line".into());
+    state.borrow_mut().action(ui, "undo");
+    assert!(
+        matches!(&state.borrow().editor.history.annotations()[1], viewer_core::Annotation::Note{text,..} if text.starts_with("A note"))
+    );
+    state.borrow_mut().action(ui, "redo");
+    assert!(
+        matches!(&state.borrow().editor.history.annotations()[1], viewer_core::Annotation::Note{text,..} if text.starts_with("Edited note"))
+    );
+    let target = directory.join("annotated.pdf");
+    state.borrow_mut().save_as(ui, target.clone());
+    wait(&mut state.borrow_mut(), ui, |_, ui| !ui.get_file_busy());
+    assert!(target.exists());
+    assert!(!ui.get_dirty_document());
+    assert_eq!(std::fs::read(&renamed).unwrap(), original);
+    state.borrow_mut().action(ui, "undo");
+    assert!(ui.get_dirty_document());
+    state.borrow_mut().request_open(ui, fixture("office.pdf"));
+    assert!(ui.get_pending_open());
+    state.borrow_mut().action(ui, "pending-cancel");
+    assert!(!ui.get_pending_open());
+    assert!(ui.get_dirty_document());
+    assert!(!state.borrow_mut().request_close(ui));
+    assert!(ui.get_pending_open() && ui.get_pending_close());
+    let revision = state.borrow().editor.history.revision();
+    state.borrow_mut().action(ui, "undo");
+    assert_eq!(state.borrow().editor.history.revision(), revision);
+    state.borrow_mut().action(ui, "pending-save");
+    let (document, _) = state.borrow_mut().take_save_dialog().unwrap();
+    state
+        .borrow_mut()
+        .save_dialog_result(ui, document, Some(renamed.clone()));
+    wait(&mut state.borrow_mut(), ui, |_, ui| !ui.get_file_busy());
+    assert!(ui.get_pending_open() && ui.get_dirty_document());
+    assert!(!ui.get_file_message().is_empty());
+    assert_eq!(std::fs::read(&renamed).unwrap(), original);
+    state.borrow_mut().action(ui, "pending-cancel");
+    assert!(!state.borrow_mut().take_close_request());
+    state.borrow_mut().action(ui, "redo");
+    assert!(!ui.get_dirty_document());
+    state.borrow_mut().request_open(ui, target);
+    wait(&mut state.borrow_mut(), ui, |state, ui| {
+        ui.get_ready() && state.editor.native_notes_count() > 0 && ui.get_tiles().row_count() > 0
+    });
+    state.borrow_mut().annotation_click(ui, -1);
+    assert!(ui.get_note_visible() && ui.get_note_read_only());
+    assert!(ui.get_note_text().contains("日本語"));
+    crate::capture::snapshot(ui, "annotation-saved-note").unwrap();
+    state.borrow_mut().action(ui, "cancel-note");
 }

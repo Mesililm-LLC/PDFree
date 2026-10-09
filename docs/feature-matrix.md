@@ -22,7 +22,11 @@ Statuses describe application behavior, not everything MuPDF could support.
 | Text search | Implemented | Case-insensitive native search, highlights and next/previous; 10,000-match limit |
 | Mouse selection / Ctrl+C | Implemented | Single page, multiline Unicode text; respects COPY permission; no OCR |
 | Single/facing views, outlines, links | Unsupported in prototype | Viewer foundation backlog |
-| Annotations, page editing, forms, save | Unsupported in prototype | Editing milestone |
+| Highlights / sticky notes | Implemented, experimental | Session drafts, editable new notes, existing notes read-only; native annotations in saved copies |
+| Undo / redo | Implemented | Annotation history only, 200 commands / 32 MiB; filename changes are separate |
+| Save As | Implemented, experimental | New file only; original remains open and unchanged; preserves encryption |
+| Inline filename rename | Implemented | Double-click header, Enter/Escape; real same-folder rename, no overwrite |
+| Page editing / forms / existing content editing | Unsupported in prototype | Separate editing milestone |
 | Redaction, OCR, compression, conversion | Unsupported in prototype | Separate acceptance gates |
 | Existing content editing / signatures | Unsupported in prototype | Separate fidelity and security research |
 | AI, cloud, telemetry | Unsupported in prototype | No startup services or network runtime |

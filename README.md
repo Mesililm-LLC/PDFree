@@ -1,6 +1,6 @@
 # PDFree
 
-An offline Windows 11 x64 PDF viewer prototype built with Rust, Slint, and MuPDF. It opens real PDFs with a virtualized continuous viewport, asynchronous clipped rendering, page navigation, and zoom/fit controls. This milestone does not edit or save documents.
+An offline Windows 11 x64 PDF viewer and annotation prototype built with Rust, Slint, and MuPDF. It opens real PDFs with a virtualized continuous viewport, asynchronous clipped rendering, page navigation, and zoom/fit controls.
 
 ## Build and run
 
@@ -23,6 +23,12 @@ Encrypted PDFs show a masked password form with retry and cancel. Ctrl+F or Find
 
 ## Validation
 
+Double-click the document filename in the header to rename the actual file in its current folder. Enter confirms, Escape cancels, and a missing `.pdf` extension is added. Existing files are never overwritten; a conflict or invalid Windows filename leaves the editor open with an explanation.
+
+Select text and choose Highlight, or choose Note and click a page to write a sticky note. Click a new note to edit it; existing PDF notes open read-only. Undo/Redo and Ctrl+Z/Ctrl+Y apply to this session's annotations. Save As (Ctrl+S) writes an annotated copy and keeps the original open, preserving undo history. Opening another PDF or closing with unsaved annotations offers Save As, Discard, or Cancel. Saving to an existing path is rejected: choose a new filename.
+
+Annotation drafts are limited to 2,000 items, notes to 16,384 UTF-8 bytes, and history to 200 commands / 32 MiB. Existing note previews retain at most 16 nearby pages, 256 notes and 256 KiB of text per page. PDFs that restrict annotations disable the creation controls. Encrypted copies retain encryption and require the original password when reopened.
+
 ```powershell
 ./scripts/check.ps1
 ./scripts/benchmark.ps1 -Trials 20
@@ -42,11 +48,13 @@ Read [architecture](docs/architecture.md), [feature coverage](docs/feature-matri
 
 Reader-tool test evidence and 20 updated warm trials: [reader tools validation](benchmarks/results/reader-tools.md).
 
+Annotation, save-copy, and rename checks: [annotation validation](benchmarks/results/annotations.md). Run `python scripts/verify-annotations.py` after the UI tests and retained native test artifacts to inspect generated copies independently.
+
 ## Known limits
 
 The application raster cache is bounded at 128 MiB. MuPDF 0.8.0 fixes its native-store threshold at 256 MiB; the planned 64 MiB target remains unmet. Native allocations, Slint images, GPU resources, and live document/display-list objects are additional memory. Cancellation drops queued/stale work; active native calls finish. Malicious native inputs are not isolated in a separate process.
 
-Search is capped at 10,000 matches and 512 UTF-8 bytes per query. Selectable text is capped at 100,000 characters per page, retained for at most 16 nearby pages. Thumbnails retain at most 32 nearby rows. Annotations, editing, forms, saving, OCR, redaction, signatures, and AI are not implemented. See the feature matrix for precise status.
+Search is capped at 10,000 matches and 512 UTF-8 bytes per query. Selectable text is capped at 100,000 characters per page, retained for at most 16 nearby pages. Thumbnails retain at most 32 nearby rows. Existing content editing, page operations, forms, OCR, redaction, signatures, and AI are not implemented. Existing annotations cannot be deleted or edited. See the feature matrix for precise status.
 
 ## License
 
