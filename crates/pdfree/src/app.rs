@@ -14,6 +14,7 @@ mod reader_tests;
 
 #[path = "editing.rs"]
 mod editing;
+pub use editing::ToolDialog;
 
 pub struct State {
     engine: Engine,
@@ -280,6 +281,7 @@ impl State {
                     ui.set_ready(true);
                     ui.set_can_copy(info.can_copy);
                     ui.set_can_annotate(info.can_annotate);
+                    ui.set_can_assemble(info.can_assemble);
                     ui.set_password_required(false);
                     self.dirty = true;
                     self.trace.event("document_parsed", serde_json::json!({"pages":info.pages,"engine_ms":elapsed.as_secs_f64()*1000.0}));

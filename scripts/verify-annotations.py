@@ -35,6 +35,21 @@ renamed = folder / "Renamed document.pdf"
 assert original.read_bytes() == renamed.read_bytes(), "Save As modified original bytes"
 report = {"reader": "pypdf", "version": __import__("pypdf").__version__, "checks": checks,
           "save_as_source_unchanged": True, "visual_fidelity_verified": False}
+if (folder / "extracted.pdf").exists():
+    source = PdfReader(folder / "pages.pdf", strict=True)
+    for name, indices in [("extracted.pdf", [0, 1, 3]),
+                          ("split/pages-part-1.pdf", [0]),
+                          ("split/pages-part-2.pdf", list(range(1, 20)))]:
+        path = folder / name
+        exported = PdfReader(path, strict=True)
+        assert len(exported.pages) == len(indices)
+        assert [page.extract_text() for page in exported.pages] == [source.pages[i].extract_text() for i in indices]
+        assert not exported.outline, "Subset exports must remove potentially dangling bookmarks"
+        checks.append({"file": str(path.relative_to(root)),
+                       "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                       "pages": len(exported.pages), "page_text_matches_source": True})
+    assert (folder / "pages.pdf").read_bytes() == (root / "tests/corpus/office.pdf").read_bytes()
+    report["page_export_source_unchanged"] = True
 output = root / "benchmarks/runs/annotations-verification.json"
 output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
 print(json.dumps(report, indent=2))

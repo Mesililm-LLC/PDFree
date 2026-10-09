@@ -15,6 +15,11 @@ enum DialogResult {
         document: u64,
         path: Option<PathBuf>,
     },
+    Tool {
+        document: u64,
+        kind: app::ToolDialog,
+        paths: Vec<PathBuf>,
+    },
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -74,6 +79,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 || ui.get_rename_active()
                 || ui.get_note_visible()
                 || ui.get_pending_open()
+                || ui.get_page_tools_visible()
+                || ui.get_highlight_visible()
+                || ui.get_annotation_list_visible()
             {
                 return;
             }
@@ -199,6 +207,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     DialogResult::Save { document, path } => {
                         state.save_dialog_result(&ui, document, path);
                     }
+                    DialogResult::Tool {
+                        document,
+                        kind,
+                        paths,
+                    } => {
+                        state.tool_dialog_result(&ui, document, kind, paths);
+                    }
                 }
             }
             state.tick(&ui);
@@ -209,7 +224,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let send = timer_dialog_send.clone();
                 std::thread::spawn(move || {
                     let mut dialog = rfd::FileDialog::new()
-                        .set_title("Save annotated PDF as")
+                        .set_title("Save and open PDF copy")
                         .add_filter("PDF documents", &["pdf"]);
                     if let Some(name) = suggested_path.file_name() {
                         dialog = dialog.set_file_name(name.to_string_lossy());
@@ -219,6 +234,51 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     let path = dialog.save_file();
                     let _ = send.send(DialogResult::Save { document, path });
+                });
+            }
+            if !state.dialog_open
+                && let Some((document, kind, source_path)) = state.take_tool_dialog()
+            {
+                state.dialog_open = true;
+                let send = timer_dialog_send.clone();
+                std::thread::spawn(move || {
+                    let mut dialog = rfd::FileDialog::new().add_filter("PDF documents", &["pdf"]);
+                    if let Some(directory) = source_path.parent() {
+                        dialog = dialog.set_directory(directory);
+                    }
+                    let paths = match &kind {
+                        app::ToolDialog::Insert => dialog
+                            .set_title("Insert PDF after the current page")
+                            .pick_file()
+                            .into_iter()
+                            .collect(),
+                        app::ToolDialog::Merge => dialog
+                            .set_title("Append PDFs to this document")
+                            .pick_files()
+                            .unwrap_or_default(),
+                        app::ToolDialog::Extract => {
+                            let stem = source_path
+                                .file_stem()
+                                .unwrap_or_default()
+                                .to_string_lossy();
+                            dialog
+                                .set_title("Extract selected pages to a PDF")
+                                .set_file_name(format!("{stem}-extracted.pdf"))
+                                .save_file()
+                                .into_iter()
+                                .collect()
+                        }
+                        app::ToolDialog::Split => dialog
+                            .set_title("Choose a folder for the two split PDFs")
+                            .pick_folder()
+                            .into_iter()
+                            .collect(),
+                    };
+                    let _ = send.send(DialogResult::Tool {
+                        document,
+                        kind,
+                        paths,
+                    });
                 });
             }
             if state.take_close_request() {

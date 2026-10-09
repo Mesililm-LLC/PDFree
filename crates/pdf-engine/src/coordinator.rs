@@ -13,11 +13,13 @@ use std::{
 use viewer_core::{PageSize, PixelTile, RenderQueue, RenderRequest};
 
 struct Job {
+    content: u64,
     request: RenderRequest,
     list: Arc<DisplayList>,
     thumbnail: bool,
 }
 struct Completed {
+    content: u64,
     thumbnail: bool,
     request: RenderRequest,
     pixels: Option<Result<PixelTile, EngineError>>,
@@ -62,8 +64,11 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                         } else {
                             shared.current(job.request.key.document, job.request.generation)
                         };
+                        let valid =
+                            valid && shared.current_content(job.request.key.document, job.content);
                         let pixels = valid.then(|| raster::render(&job.list, job.request.key));
                         let result = Completed {
+                            content: job.content,
                             thumbnail: job.thumbnail,
                             request: job.request,
                             pixels,
@@ -83,6 +88,10 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
     drop(job_rx);
     let mut document: Option<PdfDocument> = None;
     let mut can_copy = false;
+    let mut journal: Option<viewer_core::SnapshotHistory> = None;
+    let mut content: u64 = 0;
+    let mut annotation_queue = std::collections::VecDeque::new();
+    let mut annotation_cache = HashMap::new();
     let mut source_path = std::path::PathBuf::new();
     let mut session_password: Option<String> = None;
     let mut notes_queue = std::collections::VecDeque::new();
@@ -102,6 +111,11 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
             std::mem::take(&mut *slot)
         };
         if let Some(open) = desired.open {
+            journal = None;
+            content = 0;
+            shared.content.store(0, Ordering::Release);
+            annotation_queue.clear();
+            annotation_cache.clear();
             reader = crate::reader::Reader::default();
             lists.clear();
             document = None;
@@ -150,6 +164,7 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                 let info = DocumentInfo {
                     can_copy: doc.permissions().contains(Permission::COPY),
                     can_annotate: doc.permissions().contains(Permission::ANNOTATE),
+                    can_assemble: doc.permissions().contains(Permission::ASSEMBLE),
                     pages: count as usize,
                     first_page: PageSize::new(bounds.width(), bounds.height()),
                 };
@@ -186,24 +201,197 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
             }
         }
         if let Some(command) = desired.file {
+            let direct_save = matches!(&command.action, FileCommandAction::Save);
+            if let FileCommandAction::Edit {
+                revision,
+                generation,
+                command: edit,
+            } = &command.action
+            {
+                let result = if command.document != document_id
+                    || !shared.current_document(command.document)
+                {
+                    Err("The document changed before editing started".into())
+                } else if let Some(doc) = document.as_ref() {
+                    crate::editing::perform(
+                        doc,
+                        &mut journal,
+                        session_password.as_deref(),
+                        *revision,
+                        edit,
+                        || shared.current_document(command.document),
+                    )
+                } else {
+                    Err("No PDF is open".into())
+                };
+                match result {
+                    Ok((doc, focus, revision)) => {
+                        let info = crate::editing::info(&doc).expect("validated edited PDF");
+                        content = content.wrapping_add(1);
+                        shared.content.store(content, Ordering::Release);
+                        shared.generation.store(*generation, Ordering::Release);
+                        lists.clear();
+                        queue.replace(vec![]);
+                        reader = crate::reader::Reader::default();
+                        notes_queue.clear();
+                        notes_cache.clear();
+                        annotation_queue.clear();
+                        annotation_cache.clear();
+                        geometry = vec![None; info.pages];
+                        geometry[0] = Some(info.first_page);
+                        cursor = 1;
+                        can_copy = info.can_copy;
+                        document = Some(doc);
+                        shared.file_busy.store(false, Ordering::Release);
+                        let h = journal.as_ref().unwrap();
+                        emit(
+                            &shared,
+                            &events,
+                            Event::Changed {
+                                document: document_id,
+                                operation: command.operation,
+                                revision,
+                                generation: *generation,
+                                info,
+                                dirty: h.dirty(),
+                                can_undo: h.can_undo(),
+                                can_redo: h.can_redo(),
+                                focus_page: focus,
+                            },
+                        );
+                    }
+                    Err(message) => {
+                        shared.file_busy.store(false, Ordering::Release);
+                        emit(
+                            &shared,
+                            &events,
+                            Event::FileError {
+                                document: command.document,
+                                operation: command.operation,
+                                message,
+                            },
+                        );
+                    }
+                }
+                continue;
+            }
             let result = if command.document != document_id
                 || !shared.current_document(command.document)
             {
                 Err("The document changed before the file operation started".into())
             } else if let Some(doc) = document.as_ref() {
-                match command.action {
+                let action = match command.action {
+                    FileCommandAction::Save => FileCommandAction::RenameAndSave {
+                        name: source_path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("")
+                            .into(),
+                        annotations: vec![],
+                    },
+                    FileCommandAction::Rename(name) if journal.is_some() => {
+                        FileCommandAction::RenameAndSave {
+                            name,
+                            annotations: vec![],
+                        }
+                    }
+                    action => action,
+                };
+                match action {
+                    FileCommandAction::Save => unreachable!(),
+                    FileCommandAction::Edit { .. } => unreachable!(),
+                    FileCommandAction::Extract {
+                        revision,
+                        target,
+                        pages,
+                    } => {
+                        if revision != journal.as_ref().map_or(0, |h| h.revision()) {
+                            Err("Document revision changed".into())
+                        } else {
+                            crate::editing::extract(
+                                doc,
+                                &source_path,
+                                session_password.as_deref(),
+                                &target,
+                                &pages,
+                                || shared.current_document(command.document),
+                            )
+                            .map(|p| (p, FileAction::Extract))
+                        }
+                    }
+                    FileCommandAction::Split {
+                        revision,
+                        directory,
+                        after,
+                    } => {
+                        if revision != journal.as_ref().map_or(0, |h| h.revision()) {
+                            Err("Document revision changed".into())
+                        } else {
+                            crate::editing::split(
+                                doc,
+                                &source_path,
+                                session_password.as_deref(),
+                                &directory,
+                                after,
+                                || shared.current_document(command.document),
+                            )
+                            .map(|p| (p, FileAction::Split))
+                        }
+                    }
                     FileCommandAction::SaveAs {
                         target,
                         annotations,
-                    } => crate::files::save(
-                        doc,
-                        &source_path,
-                        session_password.as_deref(),
-                        &target,
-                        &annotations,
-                        || shared.current_document(command.document),
-                    )
-                    .map(|path| (path, FileAction::SaveAs)),
+                    } => {
+                        let switch = journal.is_some() || annotations.is_empty();
+                        let baseline = if switch {
+                            crate::editing::serialize(doc).and_then(|bytes| {
+                                let initial = if journal.is_none() {
+                                    Some(viewer_core::SnapshotHistory::new(bytes.clone())?)
+                                } else {
+                                    None
+                                };
+                                Ok((
+                                    Some(crate::editing::restore(
+                                        &bytes,
+                                        session_password.as_deref(),
+                                    )?),
+                                    initial,
+                                ))
+                            })
+                        } else {
+                            Ok((None, None))
+                        };
+                        match baseline {
+                            Err(message)=>Err(message),
+                            Ok((baseline,initial))=>{
+                            let saved=crate::files::save(
+                                doc,
+                                &source_path,
+                                session_password.as_deref(),
+                                &target,
+                                if journal.is_some() { &[] } else { &annotations },
+                                || shared.current_document(command.document),
+                            );
+                            match saved {
+                                Err(message)=>Err(message),
+                                Ok(path)=>{
+                                if switch {
+                                    source_path = path.clone();
+                                    document = baseline;
+                                    if let Some(h) = initial {
+                                        journal = Some(h);
+                                    }
+                                    if let Some(h) = journal.as_mut() {
+                                        h.mark_saved();
+                                    }
+                                }
+                                Ok((path, FileAction::SaveAs))
+                                }
+                            }
+                            }
+                        }
+                    }
+                    FileCommandAction::RenameAndSave { ref annotations,.. } if journal.is_some()&&!annotations.is_empty()=>Err("Use native editing commands before saving; external drafts cannot bypass undo history".into()),
                     FileCommandAction::RenameAndSave { name, annotations } => {
                         match crate::files::prepare_rename(
                             doc,
@@ -234,7 +422,17 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                                     match result {
                                         Ok(path) => {
                                             source_path = path.clone();
-                                            Ok((path, FileAction::Rename))
+                                            if let Some(h) = journal.as_mut() {
+                                                h.mark_saved();
+                                            }
+                                            Ok((
+                                                path,
+                                                if direct_save {
+                                                    FileAction::Save
+                                                } else {
+                                                    FileAction::Rename
+                                                },
+                                            ))
                                         }
                                         Err(failure) => {
                                             source_path = failure.path;
@@ -368,6 +566,18 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                 );
             }
         }
+        if let Some((id, revision, pages)) = desired.annotations
+            && id == document_id
+            && revision == journal.as_ref().map_or(0, |h| h.revision())
+        {
+            let pages: Vec<_> = pages
+                .into_iter()
+                .filter(|p| *p < geometry.len())
+                .take(16)
+                .collect();
+            annotation_cache.retain(|p, _| pages.contains(p));
+            annotation_queue = pages.into();
+        }
         if let Some((id, pages)) = desired.notes
             && id == document_id
         {
@@ -402,7 +612,7 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
             queue.replace(
                 view.requests
                     .into_iter()
-                    .filter(|r| !inflight.contains(&(r.key, r.generation, false)))
+                    .filter(|r| !inflight.contains(&(r.key, r.generation, false, content)))
                     .collect(),
             );
         }
@@ -414,7 +624,11 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                 result.request.key,
                 result.request.generation,
                 result.thumbnail,
+                result.content,
             ));
+            if !shared.current_content(result.request.key.document, result.content) {
+                continue;
+            }
             if result.thumbnail {
                 if shared.current_document(result.request.key.document)
                     && reader.thumbnail_wanted(result.request.key.page)
@@ -483,6 +697,41 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
             }
         }
         if let Some(doc) = &document {
+            if let Some(page) = annotation_queue.pop_front() {
+                let result = annotation_cache
+                    .get(&page)
+                    .cloned()
+                    .map(Ok)
+                    .unwrap_or_else(|| crate::editing::annotations(doc, page));
+                match result {
+                    Ok((annotations, truncated)) => {
+                        annotation_cache.insert(page, (annotations.clone(), truncated));
+                        emit(
+                            &shared,
+                            &events,
+                            Event::Annotations {
+                                document: document_id,
+                                revision: journal.as_ref().map_or(0, |h| h.revision()),
+                                page,
+                                annotations,
+                                truncated,
+                            },
+                        );
+                    }
+                    Err(message) => {
+                        emit(
+                            &shared,
+                            &events,
+                            Event::ReaderError {
+                                document: document_id,
+                                operation: "annotations",
+                                page: Some(page),
+                                message,
+                            },
+                        );
+                    }
+                }
+            }
             if let Some(page) = notes_queue.pop_front() {
                 let result = notes_cache
                     .get(&page)
@@ -572,9 +821,10 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                     }
                 }
                 if let Some(list) = lists.get(&page) {
-                    inflight.insert((request.key, request.generation, false));
+                    inflight.insert((request.key, request.generation, false, content));
                     if jobs
                         .send(Job {
+                            content,
                             thumbnail: false,
                             request,
                             list: list.clone(),
@@ -627,8 +877,9 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                             generation: 0,
                             priority: u32::MAX,
                         };
-                        inflight.insert((key, 0, true));
+                        inflight.insert((key, 0, true, content));
                         let _ = jobs.send(Job {
+                            content,
                             request,
                             list: Arc::new(list),
                             thumbnail: true,

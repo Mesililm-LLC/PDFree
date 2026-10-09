@@ -39,9 +39,10 @@ fn wait(state: &mut State, ui: &AppWindow, condition: impl Fn(&State, &AppWindow
         }
         assert!(
             Instant::now() < deadline,
-            "Reader flow timed out: {} / {}",
+            "Reader flow timed out: {} / {} / {}",
             ui.get_status(),
-            ui.get_search_status()
+            ui.get_search_status(),
+            ui.get_file_message()
         );
         std::thread::sleep(Duration::from_millis(5));
     }
@@ -223,6 +224,31 @@ fn reader_flows_use_real_native_text_pointer_events_and_a_mock_clipboard() {
     ui.hide().unwrap();
 }
 
+fn annotation_count(state: &State) -> usize {
+    state.editor.notes.values().map(Vec::len).sum()
+}
+
+fn wait_annotations(state: &Rc<RefCell<State>>, ui: &AppWindow, count: usize) {
+    wait(&mut state.borrow_mut(), ui, |state, ui| {
+        !ui.get_file_busy() && annotation_count(state) == count
+    });
+}
+
+fn edit_action(state: &Rc<RefCell<State>>, ui: &AppWindow, action: &str) {
+    let revision = state.borrow().editor.revision;
+    state.borrow_mut().action(ui, action);
+    wait(&mut state.borrow_mut(), ui, |state, ui| {
+        !ui.get_file_busy() && state.editor.revision != revision
+    });
+}
+
+fn press_key(ui: &AppWindow, text: slint::SharedString) {
+    ui.window()
+        .dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
+    ui.window()
+        .dispatch_event(WindowEvent::KeyReleased { text });
+}
+
 fn editing_flows(state: &Rc<RefCell<State>>, ui: &AppWindow, window: &Rc<MinimalSoftwareWindow>) {
     let root =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../benchmarks/runs/annotations-tests");
@@ -234,6 +260,7 @@ fn editing_flows(state: &Rc<RefCell<State>>, ui: &AppWindow, window: &Rc<Minimal
             .as_nanos()
     ));
     std::fs::create_dir_all(&directory).unwrap();
+    let directory = std::fs::canonicalize(directory).unwrap();
     let source = directory.join("source.pdf");
     std::fs::copy(fixture("text.pdf"), &source).unwrap();
     let original = std::fs::read(&source).unwrap();
@@ -269,6 +296,14 @@ fn editing_flows(state: &Rc<RefCell<State>>, ui: &AppWindow, window: &Rc<Minimal
             .borrow_mut()
             .page_point(&weak.upgrade().unwrap(), page as usize, x, y)
     });
+    let callback_state = state.clone();
+    let weak = ui.as_weak();
+    ui.on_annotation_click(move |index| {
+        callback_state
+            .borrow_mut()
+            .annotation_click(&weak.upgrade().unwrap(), index)
+    });
+
     let text = state.borrow().tools.test_text(0).unwrap();
     let a = text.glyphs[0].bounds;
     let b = text.glyphs[5].bounds;
@@ -286,29 +321,22 @@ fn editing_flows(state: &Rc<RefCell<State>>, ui: &AppWindow, window: &Rc<Minimal
         (b.top + b.bottom) / 2.0 * 96.0 / 72.0,
         2,
     );
-    // Exercise text that crosses a page edge: only visible rectangles become drafts.
     let original_width = state.borrow().sizes[0].width;
     let clipped_width = (a.left + b.right) / 2.0;
     state.borrow_mut().sizes[0].width = clipped_width;
-    state.borrow_mut().action(ui, "annotate-highlight");
-    if let viewer_core::Annotation::Highlight { rects, .. } =
-        &state.borrow().editor.history.annotations()[0]
-    {
-        assert!(
-            rects
-                .iter()
-                .all(|r| r.right <= clipped_width && r.left >= 0.0)
-        );
-    } else {
-        panic!("expected clipped highlight");
-    }
-    state.borrow_mut().sizes[0].width = original_width;
+    edit_action(state, ui, "annotate-highlight");
+    wait_annotations(state, ui, 1);
+    assert!(state.borrow().editor.notes.values().flatten().any(|a| matches!(&a.annotation,viewer_core::Annotation::Highlight{rects,..} if rects.iter().all(|r|r.right<=clipped_width&&r.left>=0.0))));
+    // Only owned fixture copies are edited; the source remains unchanged until save.
+    assert_eq!(std::fs::read(&source).unwrap(), original);
     assert!(ui.get_dirty_document());
-    assert_eq!(state.borrow().editor.history.annotations().len(), 1);
-    state.borrow_mut().action(ui, "undo");
+    edit_action(state, ui, "undo");
+    wait_annotations(state, ui, 0);
     assert!(!ui.get_dirty_document());
-    state.borrow_mut().action(ui, "redo");
+    edit_action(state, ui, "redo");
+    wait_annotations(state, ui, 1);
     assert!(ui.get_dirty_document());
+    assert_eq!(state.borrow().sizes[0].width, original_width);
 
     let mut buffer = vec![slint::Rgb8Pixel::default(); 1770 * 1275];
     window.draw_if_needed(|renderer| {
@@ -332,32 +360,19 @@ fn editing_flows(state: &Rc<RefCell<State>>, ui: &AppWindow, window: &Rc<Minimal
     );
     crate::capture::snapshot(ui, "annotation-inline-rename").unwrap();
     ui.set_rename_text("cancelled".into());
-    ui.window().dispatch_event(WindowEvent::KeyPressed {
-        text: Key::Escape.into(),
-    });
-    ui.window().dispatch_event(WindowEvent::KeyReleased {
-        text: Key::Escape.into(),
-    });
+    press_key(ui, Key::Escape.into());
     assert!(!ui.get_rename_active());
     assert!(source.exists());
     assert_eq!(std::fs::read(&source).unwrap(), original);
     state.borrow_mut().action(ui, "rename-start");
     ui.set_rename_text("Renamed document".into());
-    ui.window().dispatch_event(WindowEvent::KeyPressed {
-        text: Key::Return.into(),
-    });
-    ui.window().dispatch_event(WindowEvent::KeyReleased {
-        text: Key::Return.into(),
-    });
+    press_key(ui, Key::Return.into());
     wait(&mut state.borrow_mut(), ui, |_, ui| !ui.get_file_busy());
     let renamed = directory.join("Renamed document.pdf");
     assert!(renamed.exists() && !source.exists());
     assert_eq!(ui.get_document_name(), "Renamed document.pdf");
-    assert!(
-        !ui.get_dirty_document(),
-        "renaming must save current annotations"
-    );
-    assert_eq!(state.borrow().editor.history.annotations().len(), 1);
+    assert!(!ui.get_dirty_document(), "renaming saves native edits");
+    wait_annotations(state, ui, 1);
     crate::capture::snapshot(ui, "annotation-renamed").unwrap();
 
     state.borrow_mut().action(ui, "annotate-note");
@@ -366,66 +381,251 @@ fn editing_flows(state: &Rc<RefCell<State>>, ui: &AppWindow, window: &Rc<Minimal
     ui.invoke_note_submit("   ".into());
     assert!(ui.get_note_visible());
     assert!(ui.get_file_message().contains("16,384"));
+    let revision = state.borrow().editor.revision;
     ui.invoke_note_submit("A note — café 日本語\nSecond line".into());
+    wait(&mut state.borrow_mut(), ui, |state, ui| {
+        !ui.get_file_busy() && state.editor.revision != revision
+    });
+    wait_annotations(state, ui, 2);
     assert!(!ui.get_note_visible());
-    assert_eq!(state.borrow().editor.history.annotations().len(), 2);
-    state.borrow_mut().annotation_click(ui, 1);
+    let note_index = state
+        .borrow()
+        .editor
+        .notes
+        .values()
+        .flatten()
+        .position(|a| matches!(a.annotation, viewer_core::Annotation::Note { .. }))
+        .unwrap() as i32;
+    state.borrow_mut().annotation_click(ui, note_index);
     assert!(ui.get_note_visible() && !ui.get_note_read_only());
+    let revision = state.borrow().editor.revision;
     ui.invoke_note_submit("Edited note — café 日本語\nSecond line".into());
-    state.borrow_mut().action(ui, "undo");
-    assert!(
-        matches!(&state.borrow().editor.history.annotations()[1], viewer_core::Annotation::Note{text,..} if text.starts_with("A note"))
-    );
-    state.borrow_mut().action(ui, "redo");
-    assert!(
-        matches!(&state.borrow().editor.history.annotations()[1], viewer_core::Annotation::Note{text,..} if text.starts_with("Edited note"))
-    );
-    // Confirming the current filename also commits new notes without losing history.
+    wait(&mut state.borrow_mut(), ui, |state, ui| {
+        !ui.get_file_busy() && state.editor.revision != revision
+    });
+    wait_annotations(state, ui, 2);
+    edit_action(state, ui, "undo");
+    wait_annotations(state, ui, 2);
+    assert!(state.borrow().editor.notes.values().flatten().any(|a|matches!(&a.annotation,viewer_core::Annotation::Note{text,..} if text.starts_with("A note"))));
+    edit_action(state, ui, "redo");
+    wait_annotations(state, ui, 2);
+    assert!(state.borrow().editor.notes.values().flatten().any(|a|matches!(&a.annotation,viewer_core::Annotation::Note{text,..} if text.starts_with("Edited note"))));
     state.borrow_mut().action(ui, "rename-start");
     state.borrow_mut().rename(ui, "Renamed document.pdf".into());
     wait(&mut state.borrow_mut(), ui, |_, ui| !ui.get_file_busy());
     assert!(!ui.get_dirty_document());
-    assert_eq!(state.borrow().editor.history.annotations().len(), 2);
-    let original = std::fs::read(&renamed).unwrap();
-    std::fs::write(directory.join("rename-checkpoint.pdf"), &original).unwrap();
+    let checkpoint = std::fs::read(&renamed).unwrap();
+    std::fs::write(directory.join("rename-checkpoint.pdf"), &checkpoint).unwrap();
     let target = directory.join("annotated.pdf");
     state.borrow_mut().save_as(ui, target.clone());
     wait(&mut state.borrow_mut(), ui, |_, ui| !ui.get_file_busy());
     assert!(target.exists());
+    assert_eq!(
+        state.borrow().path.as_ref(),
+        Some(&target),
+        "Save As switches the active file"
+    );
     assert!(!ui.get_dirty_document());
-    assert_eq!(std::fs::read(&renamed).unwrap(), original);
-    state.borrow_mut().action(ui, "undo");
+    assert_eq!(std::fs::read(&renamed).unwrap(), checkpoint);
+
+    // Reopened saved annotations remain editable, with native ordinals independent of UI indices.
+    state.borrow_mut().request_open(ui, target.clone());
+    wait(&mut state.borrow_mut(), ui, |state, ui| {
+        ui.get_ready() && annotation_count(state) == 2 && ui.get_tiles().row_count() > 0
+    });
+    let note_index = state
+        .borrow()
+        .editor
+        .notes
+        .values()
+        .flatten()
+        .position(|a| matches!(a.annotation, viewer_core::Annotation::Note { .. }))
+        .unwrap() as i32;
+    ui.invoke_annotation_click(note_index);
+    assert!(ui.get_note_visible() && !ui.get_note_read_only() && ui.get_annotation_editable());
+    assert!(ui.get_note_text().contains("日本語"));
+    crate::capture::snapshot(ui, "annotation-saved-note").unwrap();
+    edit_action(state, ui, "delete-annotation");
+    wait_annotations(state, ui, 1);
+    edit_action(state, ui, "undo");
+    wait_annotations(state, ui, 2);
+    let highlight_index = state
+        .borrow()
+        .editor
+        .notes
+        .values()
+        .flatten()
+        .position(|a| matches!(a.annotation, viewer_core::Annotation::Highlight { .. }))
+        .unwrap() as i32;
+    let original_highlight_rgb = state
+        .borrow()
+        .editor
+        .notes
+        .values()
+        .flatten()
+        .nth(highlight_index as usize)
+        .unwrap()
+        .rgb;
+    state.borrow_mut().annotation_click(ui, highlight_index);
+    assert!(ui.get_highlight_visible() && ui.get_annotation_editable());
+    edit_action(state, ui, "highlight-green");
+    wait_annotations(state, ui, 2);
+    assert!(
+        state
+            .borrow()
+            .editor
+            .notes
+            .values()
+            .flatten()
+            .any(
+                |a| matches!(a.annotation, viewer_core::Annotation::Highlight { .. })
+                    && (a.rgb[0] - 0.3).abs() < 0.02
+                    && (a.rgb[1] - 1.0).abs() < 0.02
+            )
+    );
+    edit_action(state, ui, "undo");
+    wait_annotations(state, ui, 2);
+    assert!(state.borrow().editor.notes.values().flatten().any(|a| {
+        matches!(a.annotation, viewer_core::Annotation::Highlight { .. })
+            && a.rgb
+                .iter()
+                .zip(original_highlight_rgb)
+                .all(|(actual, original)| (actual - original).abs() < 0.02)
+    }));
+
+    // Real Ctrl+S updates this owned PDF directly rather than requesting Save As.
+    let note_index = state
+        .borrow()
+        .editor
+        .notes
+        .values()
+        .flatten()
+        .position(|a| matches!(a.annotation, viewer_core::Annotation::Note { .. }))
+        .unwrap() as i32;
+    state.borrow_mut().annotation_click(ui, note_index);
+    let revision = state.borrow().editor.revision;
+    ui.invoke_note_submit("Edited note — café 日本語\nSecond line\nSaved with Ctrl+S".into());
+    wait(&mut state.borrow_mut(), ui, |state, ui| {
+        !ui.get_file_busy() && state.editor.revision != revision
+    });
+    wait_annotations(state, ui, 2);
+    ui.invoke_focus_document();
+    ui.window().dispatch_event(WindowEvent::KeyPressed {
+        text: Key::Control.into(),
+    });
+    press_key(ui, "s".into());
+    ui.window().dispatch_event(WindowEvent::KeyReleased {
+        text: Key::Control.into(),
+    });
+    wait(&mut state.borrow_mut(), ui, |_, ui| !ui.get_file_busy());
+    assert!(!ui.get_dirty_document());
+    assert!(state.borrow_mut().take_save_dialog().is_none());
+    assert_eq!(state.borrow().path.as_ref(), Some(&target));
+    assert_eq!(std::fs::read(&renamed).unwrap(), checkpoint);
+
+    // Pending open/close blocks undo and saves before an explicitly authorized close.
+    edit_action(state, ui, "undo");
     assert!(ui.get_dirty_document());
     state.borrow_mut().request_open(ui, fixture("office.pdf"));
     assert!(ui.get_pending_open());
+    let revision = state.borrow().editor.revision;
+    state.borrow_mut().action(ui, "undo");
+    assert_eq!(state.borrow().editor.revision, revision);
     state.borrow_mut().action(ui, "pending-cancel");
     assert!(!ui.get_pending_open());
-    assert!(ui.get_dirty_document());
+    state.borrow_mut().action(ui, "page-tools");
+    assert!(ui.get_page_tools_visible());
     assert!(!state.borrow_mut().request_close(ui));
     assert!(ui.get_pending_open() && ui.get_pending_close());
-    let revision = state.borrow().editor.history.revision();
-    state.borrow_mut().action(ui, "undo");
-    assert_eq!(state.borrow().editor.history.revision(), revision);
+    assert!(!ui.get_page_tools_visible());
     state.borrow_mut().action(ui, "pending-save");
-    let (document, _) = state.borrow_mut().take_save_dialog().unwrap();
+    wait(&mut state.borrow_mut(), ui, |_, ui| {
+        !ui.get_file_busy() && !ui.get_pending_open()
+    });
+    assert!(state.borrow_mut().take_close_request());
+    assert!(!ui.get_dirty_document());
+
+    // Page operations and exports use a separate owned multi-page fixture copy.
+    let pages_source = directory.join("pages.pdf");
+    std::fs::copy(fixture("office.pdf"), &pages_source).unwrap();
+    let pages_original = std::fs::read(&pages_source).unwrap();
+    state.borrow_mut().open(ui, pages_source.clone());
+    wait(&mut state.borrow_mut(), ui, |_, ui| {
+        ui.get_ready() && ui.get_page_count() == 20
+    });
+    assert!(ui.get_can_assemble() && ui.get_can_copy());
+    state.borrow_mut().action(ui, "page-tools");
+    assert!(ui.get_page_tools_visible());
+    crate::capture::snapshot(ui, "page-tools").unwrap();
+    ui.window().set_size(slint::LogicalSize::new(680.0, 480.0));
+    state.borrow_mut().tick(ui);
+    crate::capture::snapshot(ui, "page-tools-small").unwrap();
+    ui.window().set_size(slint::LogicalSize::new(1180.0, 850.0));
+    state.borrow_mut().tick(ui);
+    edit_action(state, ui, "blank-page");
+    assert_eq!(ui.get_page_count(), 21);
+    assert_eq!(ui.get_page_entry(), "2");
+    state.borrow_mut().action(ui, "page-tools");
+    ui.set_page_range("2".into());
+    edit_action(state, ui, "rotate-right");
+    wait(&mut state.borrow_mut(), ui, |state, _| {
+        state.sizes[1].width > state.sizes[1].height
+    });
+    state.borrow_mut().action(ui, "page-tools");
+    ui.set_move_to("3".into());
+    edit_action(state, ui, "move-page");
+    assert_eq!(ui.get_page_entry(), "3");
+    state.borrow_mut().action(ui, "page-tools");
+    ui.set_page_range("3".into());
+    edit_action(state, ui, "delete-pages");
+    assert_eq!(ui.get_page_count(), 20);
+    edit_action(state, ui, "undo");
+    assert_eq!(ui.get_page_count(), 21);
+    edit_action(state, ui, "undo");
+    edit_action(state, ui, "undo");
+    edit_action(state, ui, "undo");
+    assert_eq!(ui.get_page_count(), 20);
+    assert!(!ui.get_dirty_document());
+    assert_eq!(std::fs::read(&pages_source).unwrap(), pages_original);
+
+    state.borrow_mut().navigate(ui, 0);
+    state.borrow_mut().action(ui, "page-tools");
+    ui.set_page_range("1-2,4".into());
+    state.borrow_mut().action(ui, "extract-pages");
+    let (document, kind, _) = state.borrow_mut().take_tool_dialog().unwrap();
+    assert!(matches!(kind, super::ToolDialog::Extract));
+    let extracted = directory.join("extracted.pdf");
     state
         .borrow_mut()
-        .save_dialog_result(ui, document, Some(renamed.clone()));
+        .tool_dialog_result(ui, document, kind, vec![extracted.clone()]);
     wait(&mut state.borrow_mut(), ui, |_, ui| !ui.get_file_busy());
-    assert!(ui.get_pending_open() && ui.get_dirty_document());
-    assert!(!ui.get_file_message().is_empty());
-    assert_eq!(std::fs::read(&renamed).unwrap(), original);
-    state.borrow_mut().action(ui, "pending-cancel");
-    assert!(!state.borrow_mut().take_close_request());
-    state.borrow_mut().action(ui, "redo");
+    assert!(extracted.exists());
+    assert_eq!(state.borrow().path.as_ref(), Some(&pages_source));
     assert!(!ui.get_dirty_document());
-    state.borrow_mut().request_open(ui, target);
-    wait(&mut state.borrow_mut(), ui, |state, ui| {
-        ui.get_ready() && state.editor.native_notes_count() > 0 && ui.get_tiles().row_count() > 0
-    });
-    state.borrow_mut().annotation_click(ui, -1);
-    assert!(ui.get_note_visible() && ui.get_note_read_only());
-    assert!(ui.get_note_text().contains("日本語"));
-    crate::capture::snapshot(ui, "annotation-saved-note").unwrap();
-    state.borrow_mut().action(ui, "cancel-note");
+    let split_directory = directory.join("split");
+    std::fs::create_dir(&split_directory).unwrap();
+    state.borrow_mut().action(ui, "page-tools");
+    state.borrow_mut().action(ui, "split-pdf");
+    let (document, kind, _) = state.borrow_mut().take_tool_dialog().unwrap();
+    assert!(matches!(kind, super::ToolDialog::Split));
+    state
+        .borrow_mut()
+        .tool_dialog_result(ui, document, kind, vec![split_directory.clone()]);
+    wait(&mut state.borrow_mut(), ui, |_, ui| !ui.get_file_busy());
+    assert!(split_directory.join("pages-part-1.pdf").exists());
+    assert!(split_directory.join("pages-part-2.pdf").exists());
+    assert_eq!(std::fs::read(&pages_source).unwrap(), pages_original);
+    state.borrow_mut().open(ui, extracted);
+    wait(&mut state.borrow_mut(), ui, |_, ui| ui.get_ready());
+    assert_eq!(ui.get_page_count(), 3);
+    state
+        .borrow_mut()
+        .open(ui, split_directory.join("pages-part-1.pdf"));
+    wait(&mut state.borrow_mut(), ui, |_, ui| ui.get_ready());
+    assert_eq!(ui.get_page_count(), 1);
+    state
+        .borrow_mut()
+        .open(ui, split_directory.join("pages-part-2.pdf"));
+    wait(&mut state.borrow_mut(), ui, |_, ui| ui.get_ready());
+    assert_eq!(ui.get_page_count(), 19);
 }

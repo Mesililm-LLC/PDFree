@@ -25,9 +25,13 @@ Encrypted PDFs show a masked password form with retry and cancel. Ctrl+F or Find
 
 Double-click the document filename in the header to rename the actual file in its current folder. Enter also saves the current highlights and notes and clears the Unsaved badge; undo/redo stays available. Confirming the current filename saves edits without moving the file. Escape cancels, and a missing `.pdf` extension is added. A conflict with another file or invalid Windows filename leaves the editor and your edits available.
 
-Select text and choose Highlight, or choose Note and click a page to write a sticky note. Click a new note to edit it; existing PDF notes open read-only. Undo/Redo and Ctrl+Z/Ctrl+Y apply to this session's annotations. Save As (Ctrl+S) writes an annotated copy and keeps the original open, preserving undo history. Opening another PDF or closing with unsaved annotations offers Save As, Discard, or Cancel. Saving to an existing path is rejected: choose a new filename.
+Select text and choose Highlight, or choose Add note and click a page. Click a saved note to edit or delete it. Annotations lists notes and highlights on the current page; highlights offer yellow, green, blue, or pink and Delete. Locked annotations and truncated note previews are read-only.
 
-Annotation drafts are limited to 2,000 items, notes to 16,384 UTF-8 bytes, and history to 200 commands / 32 MiB. Existing note previews retain at most 16 nearby pages, 256 notes and 256 KiB of text per page. PDFs that restrict annotations disable the creation controls. Encrypted copies retain encryption and require the original password when reopened.
+Ctrl+S or Save commits the current PDF in place. Ctrl+Shift+S or Save As copy creates and opens a new file; existing targets are rejected. Opening another PDF or closing with unsaved changes offers Save, Discard, or Cancel. Filename changes also save current changes.
+
+Manage pages accepts ranges such as `1-3,5`. Rotate or delete selected pages, move the current page to a new position, insert a blank page or PDF after the current page, or merge PDFs at the end. Extract writes selected pages to a new PDF. Split writes two PDFs into a chosen folder, dividing after the current page. At least one page must remain. Annotation and page changes share Ctrl+Z/Ctrl+Y undo/redo, including after saving; filenames and exported files are outside undo history.
+
+Editing history retains up to 200 commands within 128 MiB of serialized snapshots. A change is rejected if its before/after pair cannot fit. This excludes native clones, serialization buffers, and renderer memory. Editing supports up to 100,000 pages; each import accepts at most 16 PDFs. Imported PDFs must allow copying and open without a password. Imports preserve supported text notes and highlights; PDFs with links, forms, popups or other annotation types are rejected before changing the open document. Bookmarks are not imported. Page assembly and annotation permissions are respected. Extract/split require copying and page assembly permission, remove bookmarks, and preserve encryption; original passwords remain necessary. Page extraction/deletion is not secure redaction: document metadata or other references can retain excluded content.
 
 ```powershell
 ./scripts/check.ps1
@@ -50,11 +54,13 @@ Reader-tool test evidence and 20 updated warm trials: [reader tools validation](
 
 Annotation, save-copy, and rename checks: [annotation validation](benchmarks/results/annotations.md). Run `python scripts/verify-annotations.py` after the UI tests and retained native test artifacts to inspect generated copies independently.
 
+Native editing, direct save, and page-tool checks: [page tools validation](benchmarks/results/page-tools.md).
+
 ## Known limits
 
 The application raster cache is bounded at 128 MiB. MuPDF 0.8.0 fixes its native-store threshold at 256 MiB; the planned 64 MiB target remains unmet. Native allocations, Slint images, GPU resources, and live document/display-list objects are additional memory. Cancellation drops queued/stale work; active native calls finish. Malicious native inputs are not isolated in a separate process.
 
-Search is capped at 10,000 matches and 512 UTF-8 bytes per query. Selectable text is capped at 100,000 characters per page, retained for at most 16 nearby pages. Thumbnails retain at most 32 nearby rows. Existing content editing, page operations, forms, OCR, redaction, signatures, and AI are not implemented. Existing annotations cannot be deleted or edited. See the feature matrix for precise status.
+Search is capped at 10,000 matches and 512 UTF-8 bytes per query. Selectable text is capped at 100,000 characters per page, retained for at most 16 nearby pages. Thumbnails retain at most 32 nearby rows. Existing text/image content editing, forms, OCR, redaction, signatures, and AI are not implemented. Annotation editing supports Text notes and Highlight annotations; other annotation types are preserved in the current document but have no editor. See the feature matrix for precise status.
 
 ## License
 

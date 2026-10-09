@@ -3,11 +3,13 @@ mod cache;
 mod editing;
 mod geometry;
 mod queue;
+mod snapshots;
 mod text;
 pub use cache::*;
 pub use editing::*;
 pub use geometry::*;
 pub use queue::*;
+pub use snapshots::*;
 pub use text::*;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]

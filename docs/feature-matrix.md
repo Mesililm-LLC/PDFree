@@ -22,11 +22,15 @@ Statuses describe application behavior, not everything MuPDF could support.
 | Text search | Implemented | Case-insensitive native search, highlights and next/previous; 10,000-match limit |
 | Mouse selection / Ctrl+C | Implemented | Single page, multiline Unicode text; respects COPY permission; no OCR |
 | Single/facing views, outlines, links | Unsupported in prototype | Viewer foundation backlog |
-| Highlights / sticky notes | Implemented, experimental | Session drafts, editable new notes, existing notes read-only; native annotations in saved copies |
-| Undo / redo | Implemented | Annotation history only, 200 commands / 32 MiB; filename changes are separate |
-| Save As | Implemented, experimental | New file only; original remains open and unchanged; preserves encryption |
+| Highlights / sticky notes | Implemented, experimental | Native Text/Highlight edits and deletion; locked or truncated previews read-only |
+| Undo / redo | Implemented | Shared annotation/page history, 200 commands / 128 MiB; filename changes and exports are separate |
+| Save As | Implemented, experimental | New file only; opens the copy, leaves previous source unchanged; preserves encryption |
 | Inline filename rename and save | Implemented | Enter commits current annotations and filename; another file is never replaced; undo history retained |
-| Page editing / forms / existing content editing | Unsupported in prototype | Separate editing milestone |
+| Direct Save / Ctrl+S | Implemented, experimental | Verified sibling staging and Windows replacement with recovery backup |
+| Rotate / move / delete / blank page | Implemented, experimental | Shared undo; must retain one page; ASSEMBLE permission |
+| Insert / merge | Partial | Up to 16 unpassworded PDFs; only Text/Highlight annotations supported; unsupported imports rejected |
+| Extract / split | Implemented, experimental | New files only; COPY and ASSEMBLE; bookmarks removed; not secure redaction |
+| Forms / existing content editing | Unsupported in prototype | Separate editing milestone |
 | Redaction, OCR, compression, conversion | Unsupported in prototype | Separate acceptance gates |
 | Existing content editing / signatures | Unsupported in prototype | Separate fidelity and security research |
 | AI, cloud, telemetry | Unsupported in prototype | No startup services or network runtime |

@@ -25,12 +25,12 @@ pub(crate) fn open(path: &Path, password: Option<&str>) -> Result<PdfDocument, S
     }
     Ok(doc)
 }
-fn options() -> PdfWriteOptions {
+pub(crate) fn options() -> PdfWriteOptions {
     let mut options = PdfWriteOptions::default();
     options.set_encryption(Encryption::Keep);
     options
 }
-fn apply(doc: &PdfDocument, annotations: &[Annotation]) -> Result<(), String> {
+pub(crate) fn apply(doc: &PdfDocument, annotations: &[Annotation]) -> Result<(), String> {
     if annotations.len() > 2_000 {
         return Err("Too many annotations (maximum 2,000)".into());
     }

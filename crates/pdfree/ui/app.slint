@@ -5,6 +5,7 @@ export struct TileSurface { pixels: image, x: float, y: float, w: float, h: floa
 export struct OverlaySurface { x: float, y: float, w: float, h: float, selected: bool }
 export struct ThumbnailSurface { number: int, pixels: image }
 export struct AnnotationSurface { x: float, y: float, w: float, h: float, kind: int, label: string, index: int }
+export struct AnnotationItem { index: int, label: string, editable: bool }
 
 export component AppWindow inherits Window {
     init => { Palette.color-scheme = ColorScheme.light; }
@@ -23,6 +24,13 @@ export component AppWindow inherits Window {
     in-out property <string> password;
     in-out property <bool> can-copy: false;
     in-out property <bool> can-annotate: false;
+    in-out property <bool> can-assemble: false;
+    in-out property <bool> page-tools-visible: false;
+    in-out property <string> page-range;
+    in-out property <string> move-to;
+    in-out property <bool> annotation-list-visible: false;
+    in-out property <bool> highlight-visible: false;
+    in-out property <bool> annotation-editable: false;
     in-out property <bool> dirty-document: false;
     in-out property <bool> can-undo: false;
     in-out property <bool> can-redo: false;
@@ -58,6 +66,7 @@ export component AppWindow inherits Window {
     in property <[OverlaySurface]> overlays;
     in property <[ThumbnailSurface]> thumbnails;
     in property <[AnnotationSurface]> annotations;
+    in property <[AnnotationItem]> annotation-items;
     callback action(string);
     callback navigate(string);
     callback password-submit(string);
@@ -79,6 +88,8 @@ export component AppWindow inherits Window {
     public function focus-search() { search-entry.focus(); }
     public function focus-rename() { rename-edit.focus(); rename-edit.select-all(); }
     public function focus-note() { note-edit.focus(); }
+    public function focus-modal() { modal-keys.focus(); }
+    public function focus-page-tools() { page-range-edit.focus(); }
     clipboard-text := LineEdit {
         visible: false;
         read-only: true;
@@ -88,13 +99,19 @@ export component AppWindow inherits Window {
     forward-focus: keys;
     keys := FocusScope {
         key-pressed(event) => {
-            if root.pending-open || root.note-visible {
-                if event.text == Key.Escape { if root.pending-open { root.action("pending-cancel"); } else { root.action("cancel-note"); } }
+            if root.pending-open || root.note-visible || root.page-tools-visible || root.annotation-list-visible || root.highlight-visible {
+                if event.text == Key.Escape {
+                    if root.pending-open { root.action("pending-cancel"); }
+                    else if root.note-visible { root.action("cancel-note"); }
+                    else if root.page-tools-visible { root.action("close-page-tools"); }
+                    else if root.annotation-list-visible { root.action("close-annotations"); }
+                    else { root.action("cancel-highlight"); }
+                }
                 return accept;
             }
             if event.text == Key.Escape && root.note-placement { root.action("cancel-note"); return accept; }
             if event.modifiers.control {
-                if event.text == "s" || event.text == "S" { if root.ready && !root.file-busy && !root.rename-active { root.action("save-as"); } return accept; }
+                if event.text == "s" || event.text == "S" { if root.ready && !root.file-busy && !root.rename-active { if event.modifiers.shift { root.action("save-as"); } else { root.action("save"); } } return accept; }
                 if event.text == "z" || event.text == "Z" { if event.modifiers.shift { root.action("redo"); } else { root.action("undo"); } return accept; }
                 if event.text == "y" || event.text == "Y" { root.action("redo"); return accept; }
                 if event.text == "o" || event.text == "O" { root.action("open"); return accept; }
@@ -153,7 +170,18 @@ export component AppWindow inherits Window {
                     Button { text: "Redo"; enabled: root.can-redo && !root.file-busy; clicked => { root.action("redo"); } }
                     Rectangle { horizontal-stretch: 1; }
                     Text { visible: root.note-placement; text: "Click a page to place your note"; color: #526171; vertical-alignment: center; font-size: 12px; }
-                    Button { text: root.file-busy ? "Saving…" : "Save As…"; enabled: root.ready && !root.file-busy && !root.rename-active; clicked => { root.action("save-as"); } }
+                }
+            }
+            Rectangle {
+                height: 44px;
+                background: white;
+                HorizontalLayout {
+                    padding-left: 16px; padding-right: 16px; padding-top: 5px; padding-bottom: 5px; spacing: 8px;
+                    Button { text: "Manage pages"; enabled: root.ready && !root.file-busy && !root.rename-active; clicked => { root.action("page-tools"); } }
+                    Button { text: "Annotations"; enabled: root.ready && !root.file-busy; clicked => { root.action("annotation-list"); } }
+                    Rectangle { horizontal-stretch: 1; }
+                    Button { text: root.file-busy ? "Saving…" : "Save"; enabled: root.ready && !root.file-busy && !root.rename-active; clicked => { root.action("save"); } }
+                    Button { text: "Save As copy…"; enabled: root.ready && !root.file-busy && !root.rename-active; clicked => { root.action("save-as"); } }
                 }
             }
             Rectangle {
@@ -327,18 +355,34 @@ export component AppWindow inherits Window {
         }
     }
     Rectangle {
-        visible: root.note-visible || root.pending-open;
+        visible: root.note-visible || root.pending-open || root.page-tools-visible || root.highlight-visible || root.annotation-list-visible;
         width: 100%; height: 100%; background: #172b4d70;
+        modal-keys := FocusScope {
+        width: 100%; height: 100%;
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                if root.pending-open { root.action("pending-cancel"); }
+                else if root.note-visible { root.action("cancel-note"); }
+                else if root.page-tools-visible { root.action("close-page-tools"); }
+                else if root.annotation-list-visible { root.action("close-annotations"); }
+                else { root.action("cancel-highlight"); }
+                return accept;
+            }
+            // Keep document shortcuts inside the modal; editors handle typing first.
+            if event.modifiers.control { return accept; }
+            return reject;
+        }
         TouchArea { }
         Rectangle {
+            visible: root.note-visible || root.pending-open;
             x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
             width: min(520px, parent.width - 40px);
             height: root.pending-open ? 290px : 390px;
             background: white; border-radius: 8px;
             VerticalLayout {
                 padding: 20px; spacing: 14px;
-                Text { text: root.pending-open ? "Save your annotations?" : (root.note-read-only ? "Document note" : "Sticky note"); color: #223b54; font-size: 21px; font-weight: 600; }
-                if root.pending-open: Text { text: root.pending-close ? "This PDF has unsaved annotations. Save a copy before closing PDFree, or discard these changes." : "This PDF has unsaved annotations. Save a copy before opening another document, or discard these changes."; wrap: word-wrap; color: #526171; }
+                Text { text: root.pending-open ? "Save your changes?" : (root.note-read-only ? "Document note" : "Sticky note"); color: #223b54; font-size: 21px; font-weight: 600; }
+                if root.pending-open: Text { text: root.pending-close ? "This PDF has unsaved changes. Save before closing PDFree, or discard these changes." : "This PDF has unsaved changes. Save before opening another document, or discard these changes."; wrap: word-wrap; color: #526171; }
                 note-edit := TextEdit {
                     visible: !root.pending-open;
                     height: root.pending-open ? 0px : 190px;
@@ -362,11 +406,110 @@ export component AppWindow inherits Window {
                     alignment: end; spacing: 8px;
                     if root.pending-open: Button { text: "Cancel"; clicked => { root.action("pending-cancel"); } }
                     if root.pending-open: Button { text: "Discard"; clicked => { root.action("pending-discard"); } }
-                    if root.pending-open: Button { text: root.file-busy ? "Saving…" : "Save As…"; enabled: !root.file-busy; clicked => { root.action("pending-save"); } }
+                    if root.pending-open: Button { text: root.file-busy ? "Saving…" : "Save"; enabled: !root.file-busy; clicked => { root.action("pending-save"); } }
                     if !root.pending-open: Button { text: root.note-read-only ? "Close" : "Cancel"; clicked => { root.action("cancel-note"); } }
+                    if root.note-visible && root.annotation-editable && !root.note-read-only: Button { text: "Delete"; enabled: !root.file-busy; clicked => { root.action("delete-annotation"); } }
                     if !root.pending-open && !root.note-read-only: Button { text: "Save note"; enabled: root.note-text != "" && !root.file-busy; clicked => { root.note-submit(root.note-text); } }
                 }
             }
+        }
+        Rectangle {
+            visible: root.page-tools-visible;
+            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+            width: min(600px, parent.width - 40px); height: min(440px, parent.height - 24px);
+            background: white; border-radius: 8px;
+            VerticalLayout {
+                padding: 20px; spacing: 10px;
+                Text { text: "Manage pages"; color: #223b54; font-size: 21px; font-weight: 600; }
+                ScrollView {
+                vertical-stretch: 1;
+                VerticalLayout {
+                spacing: 10px;
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text { text: "Pages"; vertical-alignment: center; color: #526171; }
+                    page-range-edit := LineEdit { text <=> root.page-range; placeholder-text: "For example: 1-3,5"; horizontal-stretch: 1; enabled: !root.file-busy; }
+                }
+                Text { text: "Use page numbers or ranges, such as 1-3,5. Rotate, delete, and extract use this range."; wrap: word-wrap; color: #526171; font-size: 12px; }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Button { text: "Rotate left"; enabled: root.can-assemble && !root.file-busy; clicked => { root.action("rotate-left"); } }
+                    Button { text: "Rotate right"; enabled: root.can-assemble && !root.file-busy; clicked => { root.action("rotate-right"); } }
+                    Button { text: "Delete pages"; enabled: root.can-assemble && !root.file-busy; clicked => { root.action("delete-pages"); } }
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text { text: "Move current page to"; vertical-alignment: center; color: #526171; }
+                    LineEdit { text <=> root.move-to; placeholder-text: "Page number"; width: 110px; enabled: root.can-assemble && !root.file-busy; }
+                    Button { text: "Move"; enabled: root.can-assemble && !root.file-busy; clicked => { root.action("move-page"); } }
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Button { text: "Insert PDF…"; enabled: root.can-assemble && !root.file-busy; clicked => { root.action("insert-pdf"); } }
+                    Button { text: "Merge PDF…"; enabled: root.can-assemble && !root.file-busy; clicked => { root.action("merge-pdf"); } }
+                    Button { text: "Blank page"; enabled: root.can-assemble && !root.file-busy; clicked => { root.action("blank-page"); } }
+                }
+                Text { text: "Insert PDF and blank page add after the current page. Merge appends a PDF. Split makes two PDFs after the current page."; wrap: word-wrap; color: #526171; font-size: 12px; }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Button { text: "Extract pages…"; enabled: root.can-copy && root.can-assemble && !root.file-busy; clicked => { root.action("extract-pages"); } }
+                    Button { text: "Split PDF…"; enabled: root.can-copy && root.can-assemble && !root.file-busy; clicked => { root.action("split-pdf"); } }
+                }
+                if root.file-message != "": Text { text: root.file-message; wrap: word-wrap; color: #805715; font-size: 12px; }
+                }
+                }
+                HorizontalLayout { alignment: end; Button { text: root.file-busy ? "Working…" : "Close"; enabled: !root.file-busy; clicked => { root.action("close-page-tools"); } } }
+            }
+        }
+        Rectangle {
+            visible: root.highlight-visible;
+            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+            width: min(520px, parent.width - 40px); height: 240px;
+            background: white; border-radius: 8px;
+            VerticalLayout {
+                padding: 20px; spacing: 14px;
+                Text { text: "Highlight"; color: #223b54; font-size: 21px; font-weight: 600; }
+                Text { text: root.annotation-editable ? "Choose a color or delete this highlight." : "This highlight is read-only."; wrap: word-wrap; color: #526171; }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Button { text: "Yellow"; enabled: root.annotation-editable && !root.file-busy; clicked => { root.action("highlight-yellow"); } }
+                    Button { text: "Green"; enabled: root.annotation-editable && !root.file-busy; clicked => { root.action("highlight-green"); } }
+                    Button { text: "Blue"; enabled: root.annotation-editable && !root.file-busy; clicked => { root.action("highlight-blue"); } }
+                    Button { text: "Pink"; enabled: root.annotation-editable && !root.file-busy; clicked => { root.action("highlight-pink"); } }
+                }
+                if root.file-message != "": Text { text: root.file-message; wrap: word-wrap; color: #805715; font-size: 12px; }
+                HorizontalLayout {
+                    alignment: end; spacing: 8px;
+                    if root.annotation-editable: Button { text: "Delete"; enabled: !root.file-busy; clicked => { root.action("delete-annotation"); } }
+                    Button { text: "Close"; clicked => { root.action("cancel-highlight"); } }
+                }
+            }
+        }
+        Rectangle {
+            visible: root.annotation-list-visible;
+            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+            width: min(560px, parent.width - 40px); height: min(420px, parent.height - 40px);
+            background: white; border-radius: 8px;
+            VerticalLayout {
+                padding: 20px; spacing: 12px;
+                Text { text: "Annotations on this page"; color: #223b54; font-size: 21px; font-weight: 600; }
+                Text { text: "Select a note or highlight to view it. Available edits depend on the document permissions."; wrap: word-wrap; color: #526171; font-size: 12px; }
+                ScrollView {
+                    vertical-stretch: 1;
+                    VerticalLayout {
+                        spacing: 6px;
+                        for item in root.annotation-items: Button {
+                            text: item.label + (item.editable ? "" : " (read-only)");
+                            enabled: !root.file-busy;
+                            clicked => { root.annotation-click(item.index); }
+                        }
+                        if root.annotation-items.length == 0: Text { text: "No supported annotations on this page."; color: #526171; wrap: word-wrap; }
+                    }
+                }
+                if root.file-message != "": Text { text: root.file-message; wrap: word-wrap; color: #805715; font-size: 12px; }
+                HorizontalLayout { alignment: end; Button { text: "Close"; clicked => { root.action("close-annotations"); } } }
+            }
+        }
         }
     }
 }

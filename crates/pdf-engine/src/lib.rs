@@ -1,5 +1,6 @@
 //! MuPDF ownership and background rendering boundary.
 mod coordinator;
+mod editing;
 mod files;
 mod raster;
 mod reader;
@@ -25,12 +26,63 @@ pub struct DocumentInfo {
     pub first_page: PageSize,
     pub can_copy: bool,
     pub can_annotate: bool,
+    pub can_assemble: bool,
+}
+
+#[derive(Clone, Debug)]
+pub enum EditCommand {
+    Add(Annotation),
+    UpdateNote {
+        page: usize,
+        ordinal: usize,
+        text: String,
+    },
+    Color {
+        page: usize,
+        ordinal: usize,
+        rgb: [f32; 3],
+    },
+    DeleteAnnotation {
+        page: usize,
+        ordinal: usize,
+    },
+    Rotate {
+        pages: Vec<usize>,
+        degrees: i32,
+    },
+    Move {
+        page: usize,
+        to: usize,
+    },
+    DeletePages {
+        pages: Vec<usize>,
+    },
+    Insert {
+        paths: Vec<PathBuf>,
+        at: usize,
+    },
+    Blank {
+        at: usize,
+    },
+    Undo,
+    Redo,
+}
+#[derive(Clone, Debug)]
+pub struct NativeAnnotation {
+    pub ordinal: usize,
+    pub annotation: Annotation,
+    pub rgb: [f32; 3],
+    pub opacity: f32,
+    pub editable: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FileAction {
     SaveAs,
     Rename,
+    Save,
+    Extract,
+    Split,
 }
 struct FileCommand {
     document: u64,
@@ -38,6 +90,22 @@ struct FileCommand {
     action: FileCommandAction,
 }
 enum FileCommandAction {
+    Edit {
+        revision: u64,
+        generation: u64,
+        command: EditCommand,
+    },
+    Save,
+    Extract {
+        revision: u64,
+        target: PathBuf,
+        pages: Vec<usize>,
+    },
+    Split {
+        revision: u64,
+        directory: PathBuf,
+        after: usize,
+    },
     SaveAs {
         target: PathBuf,
         annotations: Vec<Annotation>,
@@ -71,6 +139,24 @@ impl std::error::Error for EngineError {}
 
 #[derive(Debug)]
 pub enum Event {
+    Changed {
+        document: u64,
+        operation: u64,
+        revision: u64,
+        generation: u64,
+        info: DocumentInfo,
+        dirty: bool,
+        can_undo: bool,
+        can_redo: bool,
+        focus_page: usize,
+    },
+    Annotations {
+        document: u64,
+        revision: u64,
+        page: usize,
+        annotations: Vec<NativeAnnotation>,
+        truncated: bool,
+    },
     FileDone {
         document: u64,
         operation: u64,
@@ -156,6 +242,7 @@ struct View {
 
 #[derive(Default)]
 struct Desired {
+    annotations: Option<(u64, u64, Vec<usize>)>,
     open: Option<Open>,
     view: Option<View>,
     text: Option<(u64, Vec<usize>)>,
@@ -166,6 +253,7 @@ struct Desired {
 }
 
 struct Shared {
+    content: AtomicU64,
     desired: Mutex<Desired>,
     document: AtomicU64,
     generation: AtomicU64,
@@ -175,6 +263,9 @@ struct Shared {
 }
 
 impl Shared {
+    fn current_content(&self, document: u64, content: u64) -> bool {
+        self.current_document(document) && self.content.load(Ordering::Acquire) == content
+    }
     fn current_document(&self, document: u64) -> bool {
         !self.stopping.load(Ordering::Acquire) && self.document.load(Ordering::Acquire) == document
     }
@@ -195,6 +286,7 @@ pub struct Engine {
 impl Engine {
     pub fn spawn(workers: usize) -> Self {
         let shared = Arc::new(Shared {
+            content: AtomicU64::new(0),
             desired: Mutex::new(Desired::default()),
             document: AtomicU64::new(0),
             generation: AtomicU64::new(0),
@@ -242,6 +334,7 @@ impl Engine {
         desired.thumbnails = None;
         desired.search = None;
         desired.notes = None;
+        desired.annotations = None;
         drop(desired);
         let _ = self.wake.try_send(());
     }
@@ -307,6 +400,73 @@ impl Engine {
         })
     }
 
+    pub fn annotation_pages(&self, document: u64, revision: u64, pages: Vec<usize>) {
+        self.shared.desired.lock().unwrap().annotations =
+            Some((document, revision, pages.into_iter().take(16).collect()));
+        let _ = self.wake.try_send(());
+    }
+    pub fn edit(
+        &self,
+        document: u64,
+        revision: u64,
+        operation: u64,
+        generation: u64,
+        command: EditCommand,
+    ) -> bool {
+        self.file(FileCommand {
+            document,
+            operation,
+            action: FileCommandAction::Edit {
+                revision,
+                generation,
+                command,
+            },
+        })
+    }
+    pub fn save(&self, document: u64, operation: u64) -> bool {
+        self.file(FileCommand {
+            document,
+            operation,
+            action: FileCommandAction::Save,
+        })
+    }
+    pub fn extract(
+        &self,
+        document: u64,
+        revision: u64,
+        operation: u64,
+        target: PathBuf,
+        pages: Vec<usize>,
+    ) -> bool {
+        self.file(FileCommand {
+            document,
+            operation,
+            action: FileCommandAction::Extract {
+                revision,
+                target,
+                pages,
+            },
+        })
+    }
+    pub fn split(
+        &self,
+        document: u64,
+        revision: u64,
+        operation: u64,
+        directory: PathBuf,
+        after: usize,
+    ) -> bool {
+        self.file(FileCommand {
+            document,
+            operation,
+            action: FileCommandAction::Split {
+                revision,
+                directory,
+                after,
+            },
+        })
+    }
+
     pub fn thumbnails(&self, document: u64, pages: Vec<usize>) {
         self.shared.desired.lock().unwrap().thumbnails =
             Some((document, pages.into_iter().take(32).collect()));
@@ -362,6 +522,7 @@ mod request_tests {
         let (_, events) = bounded(1);
         let engine = Engine {
             shared: Arc::new(Shared {
+                content: AtomicU64::new(0),
                 desired: Mutex::new(Desired::default()),
                 document: AtomicU64::new(1),
                 generation: AtomicU64::new(1),

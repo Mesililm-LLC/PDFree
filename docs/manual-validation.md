@@ -31,3 +31,11 @@ Use disposable copies when testing actual filename changes. Double-click the hea
 Inline rename now saves the current annotations too. Add notes, confirm a new filename, and verify the Unsaved badge clears and the renamed PDF contains them after reopening. Confirm the same filename to save without moving it. Undo after rename should mark drafts unsaved again; redo restores the checkpoint. A conflicting name or failed file replacement must retain the annotations and report the failure.
 
 Try opening another PDF and closing while drafts are unsaved; verify Save As, Discard and Cancel, including cancelling the native save picker and a save conflict. Resize and zoom with draft overlays. Test denied filesystem access on a disposable folder. Native file-picker interaction, physical double-click cadence, cross-reader appearance, access-denied recovery and mixed-monitor behavior require human qualification.
+
+## Native editing and page tools milestone
+
+This milestone adds direct Ctrl+S saving and native page/annotation changes. Use disposable PDF copies for qualification. Check saved note edit/delete and highlight colors, undo/redo before and after Save, Save As switching to the new copy, and rename saving all current changes. Close a dirty document from Manage pages and verify the Save/Discard/Cancel prompt stays visible.
+
+Try page ranges, rotation, moving, deletion, blank insertion, PDF insertion/merge, extraction and two-part split. Verify unsupported imports and output conflicts report errors without changing the current PDF or overwriting files. Subset exports remove bookmarks and are not secure redaction. Imports containing links, forms, popups or unsupported annotations are intentionally rejected.
+
+Automated software-platform tests simulate UI events; they do not certify physical Windows picker interaction, file-permission failure recovery, mixed-monitor behavior, or cross-reader appearance. These remain manual qualification tasks.
