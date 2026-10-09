@@ -1,0 +1,14 @@
+[workspace]
+members = ["crates/viewer-core", "crates/pdf-engine", "crates/pdfree"]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.97"
+license = "AGPL-3.0-only"
+version = "0.1.0"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"

@@ -1,0 +1,14 @@
+{
+  "trials": 20,
+  "meaning": "Replacement acknowledgement after vector display-list preparation; worker start is not observed. Active native calls finish. Shutdown joins workers. Not hard native cancellation or UI presentation timing.",
+  "replacement_ack_ms": {
+    "p50": 1.15665,
+    "p95": 10.4349,
+    "max": 10.4552
+  },
+  "shutdown_join_ms": {
+    "p50": 0.64045,
+    "p95": 18.456500000000002,
+    "max": 19.371699999999997
+  }
+}

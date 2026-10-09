@@ -1,0 +1,109 @@
+[
+  {
+    "file": "malformed.pdf",
+    "sha256": "19f1e5802f16a323abf5bd29723718654c06f0b2396a805cedc32ab22064ea39",
+    "bytes": 33,
+    "provenance": "Original deterministic PDFree fixture; scripts/generate-corpus.py",
+    "license": "AGPL-3.0-only"
+  },
+  {
+    "file": "mixed.pdf",
+    "sha256": "5a9c1086b3a09398f31d47f6235e02d986a4bd700076b5122bcf857a80beb895",
+    "bytes": 28624,
+    "provenance": "Original deterministic PDFree fixture; scripts/generate-corpus.py",
+    "license": "AGPL-3.0-only",
+    "encrypted": false,
+    "pages": 100,
+    "embedded_fonts": false
+  },
+  {
+    "file": "office.pdf",
+    "sha256": "1d292405900c46ec9a61433e7cd62501762613ef9c777699a05d3aa23582e70c",
+    "bytes": 5931,
+    "provenance": "Original deterministic PDFree fixture; scripts/generate-corpus.py",
+    "license": "AGPL-3.0-only",
+    "encrypted": false,
+    "pages": 20,
+    "embedded_fonts": false
+  },
+  {
+    "file": "scan.pdf",
+    "sha256": "768fd4f2cfeebd7c6e7c20a17495fa01d7102f4721ec36c69128922d22b00def",
+    "bytes": 70138,
+    "provenance": "Original deterministic PDFree fixture; scripts/generate-corpus.py",
+    "license": "AGPL-3.0-only",
+    "encrypted": false,
+    "pages": 200,
+    "embedded_fonts": false
+  },
+  {
+    "file": "text.pdf",
+    "sha256": "2909832719e1292809df2e5a7503892edf28ca28e716f0f818d245b43d0837d7",
+    "bytes": 604,
+    "provenance": "Original deterministic PDFree fixture; scripts/generate-corpus.py",
+    "license": "AGPL-3.0-only",
+    "encrypted": false,
+    "pages": 1,
+    "embedded_fonts": false
+  },
+  {
+    "file": "thousand.pdf",
+    "sha256": "73efe21724446b7bbe67560a78955cb72935136e883db63389297715602a1fda",
+    "bytes": 288037,
+    "provenance": "Original deterministic PDFree fixture; scripts/generate-corpus.py",
+    "license": "AGPL-3.0-only",
+    "encrypted": false,
+    "pages": 1000,
+    "embedded_fonts": false
+  },
+  {
+    "file": "transparency.pdf",
+    "sha256": "ee8555a6b8dd6462b9d71322121b694c745572524e73e7aa847792482494a7d5",
+    "bytes": 751,
+    "provenance": "Original deterministic PDFree fixture; scripts/generate-corpus.py",
+    "license": "AGPL-3.0-only",
+    "encrypted": false,
+    "pages": 1,
+    "embedded_fonts": false
+  },
+  {
+    "file": "vector.pdf",
+    "sha256": "ae9551d05674aac2d8f6ca4de91ce0486dc8169c33bff5eab8424a3cb8abc6e2",
+    "bytes": 256486,
+    "provenance": "Original deterministic PDFree fixture; scripts/generate-corpus.py",
+    "license": "AGPL-3.0-only",
+    "encrypted": false,
+    "pages": 1,
+    "embedded_fonts": false
+  },
+  {
+    "file": "encrypted.pdf",
+    "sha256": "9cefb7f85bd63b0c824aecb0e681bc222502d438d39b1be79265538794453dbd",
+    "bytes": 1001,
+    "provenance": "PDFree text.pdf encrypted with pypdf 6.1.1; test password pdfree-test",
+    "license": "AGPL-3.0-only",
+    "encrypted": true,
+    "pages": 1,
+    "embedded_fonts": false
+  },
+  {
+    "file": "tracemonkey.pdf",
+    "sha256": "3662ff519e485810520552bf301d8c3b2b917fd2f83303f4965d7abed367e113",
+    "bytes": 1016315,
+    "provenance": "https://raw.githubusercontent.com/mozilla/pdf.js/master/test/pdfs/tracemonkey.pdf",
+    "license": "Retains upstream document copyright; compatibility fixture only",
+    "encrypted": false,
+    "pages": 14,
+    "embedded_fonts": true
+  },
+  {
+    "file": "w3c-dummy.pdf",
+    "sha256": "3df79d34abbca99308e79cb94461c1893582604d68329a41fd4bec1885e6adb4",
+    "bytes": 13264,
+    "provenance": "https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf",
+    "license": "Retains upstream document copyright; compatibility fixture only",
+    "encrypted": false,
+    "pages": 1,
+    "embedded_fonts": true
+  }
+]

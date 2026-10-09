@@ -1,0 +1,561 @@
+# Rust + Slint + Native PDF Engine for a High-Performance Windows PDF Viewer/Editor
+
+## Executive summary
+
+**Recommendation:** for the priorities you gave—**performance first, feature completeness second, fidelity third, AI-assisted maintainability fourth**—the strongest architecture I found is:
+
+> **Rust application core + Slint desktop UI + MuPDF native engine, with MuPDF isolated behind a narrow Rust adapter, a custom virtualized/tiled PDF viewport, and parallel rendering from MuPDF display lists.**
+
+This is not a recommendation for “pure Rust.” It is a recommendation for using Rust where it provides the most value—application state, concurrency, caching, UI coordination, persistence, automation, and safety—while delegating the extremely difficult PDF interpretation/editing problem to a mature native engine.
+
+MuPDF is particularly well suited to a high-performance viewer because its documented concurrency model allows document/page access to remain serialized while a page is converted into a **display list that can subsequently be rendered safely on other threads using cloned contexts**. That maps unusually well to a tile-based, prioritized PDF viewport. citeturn18view2 The current MuPDF documentation is at 1.28.5; the actively maintained `mupdf-rs` binding describes safe Rust APIs for rendering, display lists, text extraction, PDF creation/editing, annotations, widgets/forms, links, redactions, page operations, embedded files, and low-level PDF objects. Its June 2026 v0.8.0 release was still embedding MuPDF 1.27.2, however, so **binding lag and incomplete exposure of new C APIs are real risks**. citeturn18view3turn20search2turn20search0
+
+Slint is a good match for the application shell rather than for PDF interpretation itself. It has GPU-backed renderers, software rendering alternatives, a normal scrolling system, CPU pixel-buffer images, and mechanisms for integrating externally created OpenGL textures; its current renderer documentation includes FemtoVG, Skia, software rendering, and experimental/newer WGPU-oriented paths. citeturn21search8turn21search0turn21search4 The key architectural decision would be **not** to instantiate one heavyweight UI component per PDF page. Slint should display a small, virtualized set of visible page/tile surfaces whose pixels come from the PDF engine.
+
+PDFium is the best permissively licensed alternative, and `pdfium-render` is now a substantial Rust wrapper. It supports rendering, partial-page rendering, text/object manipulation, and dynamic or static linking. The critical architectural drawback is upstream PDFium's explicit statement that **none of its public APIs are thread-safe and embedders must ensure only one PDFium call executes at a time**. citeturn19view0turn20search1 That does not make PDFium slow, but it constrains how effectively one process can parallelize expensive PDF work, which matters for your goal of rendering visible pages while simultaneously generating thumbnails, extracting text, and preparing neighboring pages.
+
+A pure-Rust engine is currently the wrong default for this project. Hayro describes itself as an experimental, work-in-progress pure-Rust PDF interpreter/renderer; newer pure-Rust projects such as `oxidize-pdf` provide useful parsing, generation, manipulation, extraction, and validation capabilities, but this ecosystem is not yet equivalent to a mature unified renderer/editor such as MuPDF for arbitrary real-world PDFs. citeturn10search1turn15search1 Pure Rust is therefore worth keeping as a **future engine experiment or auxiliary processing layer**, not as the foundation of a fidelity-sensitive Acrobat-class editor.
+
+My resulting ranking is:
+
+| Architecture | Analytical score | Bottom line |
+|---|---:|---|
+| **Slint + MuPDF** | **8.76 / 10** | Best overall balance; recommended |
+| egui + MuPDF | 8.67 / 10 | Excellent technical alternative, less attractive for a large conventional desktop editor |
+| winit + wgpu + MuPDF | 8.41 / 10 | Highest direct viewport control, but you effectively become a GUI-framework developer |
+| Iced + MuPDF | 8.38 / 10 | Credible GPU-oriented alternative |
+| Slint + PDFium | 7.99 / 10 | Strong permissive-license option; serialization constraint hurts architecture |
+| Slint + pure-Rust PDF stack | 7.04 / 10 | Excellent long-term possibility; currently the largest fidelity/editing risk |
+
+These are **engineering priors, not measured benchmarks**. I found no authoritative benchmark that tests these exact combinations, with the same UI, cache, machine, and documents. The final architecture decision should therefore be made only after the renderer POC described later in this report.
+
+The most important qualification is that **“edit existing PDF text like Word” remains hard regardless of language or engine**. PDF stores positioned graphics/text operators, fonts, glyph encodings, clipping, transformations, and resource references; an API that lets you replace a text object's string is not equivalent to a word-processing layout engine. PDFium, for example, exposes APIs to replace text in text objects, set positions and font size, manipulate page objects, and regenerate page content, but that still leaves higher-level reflow, font substitution, object grouping, and layout interpretation to the application. citeturn17search2 MuPDF provides a richer base for editing, but the same conceptual limitation applies. That feature should therefore receive an early proof-of-concept rather than being deferred until the end.
+
+## Technology landscape
+
+The PDF engine matters considerably more to rendering fidelity and editing capability than the Rust GUI library. The GUI choice primarily determines viewport integration, desktop application ergonomics, startup overhead, and how much custom rendering infrastructure must be written.
+
+### GUI toolkit comparison
+
+| Toolkit | Relevant strengths | Relevant limitations for this project | Assessment |
+|---|---|---|---|
+| **Slint** | Declarative retained UI; multiple renderers; software and GPU paths; CPU image buffers; external GL texture support; conventional desktop UI model | PDF viewport still needs custom virtualization/cache logic; external GPU interop has renderer/context constraints; some WGPU integration APIs are evolving | **Best overall desktop shell** |
+| **Iced** | Rust-native reactive model; built-in `wgpu` and `tiny-skia`; WGPU path supports DirectX 12 on Windows | More application-specific viewport/widget engineering; architectural fit should be validated with a POC | Strong alternative |
+| **egui** | Very simple immediate-mode model; easy custom canvas/texture-oriented UI; highly portable | Immediate-mode state management becomes more involved for a large conventional document editor with many panels/dialogs/complex editing controls | Excellent viewport-first alternative |
+| **winit + wgpu** | Direct control over event loop, GPU textures, upload strategy, frame scheduling and rendering | Not a full application UI toolkit; menus, text editing, accessibility, panels, dialogs and document-editor widgets become your problem | Best only if absolute viewport control outweighs development cost |
+
+Slint's renderer architecture is broader than a single graphics backend. Current documentation lists a software renderer, FemtoVG, Skia and newer WGPU-oriented options; FemtoVG can operate through OpenGL and through a WGPU configuration that gives access to Metal/Vulkan/Direct3D paths, while Slint describes its Skia renderer as sophisticated but heavier in disk footprint. citeturn21search8 That flexibility is valuable because it means the PDF architecture does **not** need to commit prematurely to a particular GPU backend.
+
+Slint can turn a CPU-side pixel buffer into an `Image`, and it can also wrap a borrowed OpenGL 2D RGBA texture. The latter has important restrictions: the texture must belong to the OpenGL context Slint uses, and OpenGL resources are not automatically shared between separate Slint windows. citeturn21search0 Slint's rendering notifier explicitly provides rendering phases in which the OpenGL context is current, while requiring the application to preserve graphics state. citeturn21search4
+
+That means there are two practical viewport paths:
+
+1. **Stable/simple path:** MuPDF rasterizes a tile on worker threads → Rust receives the pixel buffer → Slint uploads/displays it as an image.
+2. **Advanced path:** worker produces raster data → renderer thread uploads it to a persistent GPU texture → Slint displays/reuses the texture.
+
+The first should be implemented first. The second is worth testing only if profiling proves texture upload/copy cost is materially affecting frame latency.
+
+Iced is technically compelling because its official project exposes WGPU and `tiny-skia` renderers, with WGPU supporting DX12 on Windows. citeturn21search1turn21search5 egui is similarly attractive for a custom viewport because its core model is deliberately simple and texture-oriented. citeturn21search2 A raw `winit + wgpu` implementation gives still more control; WGPU itself is a native Rust graphics API supporting D3D12, Vulkan, Metal, and OpenGL. citeturn21search3
+
+For this application, however, viewport control is only part of the problem. A serious editor will accumulate properties panels, annotation toolbars, form editors, dialogs, tab management, search UI, print settings, OCR configuration, job queues, comparison views and accessibility requirements. **My judgment is that Slint provides the best compromise between a custom render surface and the amount of ordinary desktop UI you do not want to reinvent.**
+
+### Native PDF engine comparison
+
+| Capability | **MuPDF + `mupdf-rs`** | **PDFium + `pdfium-render`** | **Pure Rust: Hayro + manipulation library** |
+|---|---|---|---|
+| Rendering maturity | Very high | Very high | Promising, still developing |
+| Rust interface | High-level binding plus low-level FFI | High-level binding plus raw FPDF access | Native Rust |
+| Explicit replay/display list | **Yes** | No equivalent public embedder abstraction found | Engine-specific |
+| Parallel rendering model | **Strong:** build display list under serialized document access, replay on cloned contexts/workers | **Constrained:** public API explicitly not thread-safe | Potentially good, dependent on implementation |
+| Text extraction/search | Yes | Yes | Available to varying degrees |
+| Annotation work | Rich | Rich public APIs, but areas remain experimental | Fragmented |
+| Forms/widgets | Yes | Yes; V8/XFA optional depending build | Incomplete compared with mature engines |
+| Page insertion/deletion/reorder | Yes | Yes | Available in manipulation crates |
+| Existing page-object editing | Yes | Yes, including text/path/image APIs | Much less mature as an integrated system |
+| Secure redaction | **Native redaction support** | Redaction subtype exists, but I did not find a public apply-redaction API comparable to MuPDF's | Would require extensive validation/custom processing |
+| Incremental save | Yes when document state permits it | Yes via save flags | Library dependent |
+| Undo/journaling in engine | **MuPDF has PDF journal operations** | Application layer required | Application layer required |
+| License | AGPL or commercial | BSD-style core plus third-party notices | Varies by crate |
+| Best fit | **Maximum capability/performance** | Permissive-license renderer/editor | Research/future all-Rust stack |
+
+MuPDF's threading model is the strongest differentiator. Its official multi-threaded example states that page loading cannot happen independently on arbitrary worker threads because only one thread at a time should access the document; it then constructs a display list, after which that display list can be used safely by other rendering threads. Each worker clones the MuPDF context before replaying it into a pixmap. citeturn18view2
+
+That is almost exactly what a responsive PDF viewer needs:
+
+**serialize parsing → cache interpretation → parallelize expensive rasterization.**
+
+`mupdf-rs` already exposes rendering to pixmaps and display lists and advertises APIs for PDF annotations, widgets/forms, links, redactions, page composition, embedded files, low-level object access, text, images, vector drawings, creation and editing. citeturn20search2 The v0.8.0 release added or expanded annotation convenience APIs, drawing extraction, widgets, embedded files, structured text extraction, page composition and PDF baking, while also documenting several FFI safety/correctness fixes. citeturn20search0 The latter is both encouraging and a warning: **the FFI boundary is precisely where this architecture needs focused testing and conservative ownership rules.**
+
+PDFium is considerably stronger than its reputation as “only Chrome's renderer” might suggest. Its current public editing API can create/delete/rearrange pages and manipulate page objects, including text, images and paths. Current APIs include replacing the contents of an existing text object, setting character positions, changing font size, examining fonts and modifying other object attributes. citeturn17search2 Its Rust wrapper `pdfium-render` exposes high-level rendering/editing functionality and supports dynamic or static linkage; the current repository describes partial-page rendering and a broad set of document/object APIs. citeturn20search1
+
+But upstream PDFium makes the threading restriction unambiguous:
+
+> all PDFium calls must effectively be serialized within an embedder process. citeturn19view0
+
+For a simple reader this is manageable. For a premium editor doing simultaneous viewport rendering, thumbnails, search indexing, comparison, OCR preparation and batch processing, it is a meaningful architectural limitation. One could isolate documents across multiple PDFium helper processes, but that introduces process startup, bitmap IPC, duplicated caches and greater failure-management complexity—the opposite direction from your “fast and lean first” objective.
+
+Redaction is another reason I would validate PDFium carefully before selecting it. The source recognizes a `REDACT` annotation subtype, but a search of the current public annotation header did not reveal an equivalent “apply redaction” operation. citeturn17search0turn18view5 Merely drawing or creating a redaction annotation is **not** sufficient for secure redaction. Therefore, until an end-to-end destructive-content-removal test proves otherwise, I would classify PDFium redaction as **unverified/needs custom engineering**, not a completed premium feature.
+
+The pure-Rust story has improved significantly. Hayro describes itself as a pure-Rust PDF interpreter and renderer, but explicitly characterizes the project as experimental/work-in-progress. citeturn10search1 `oxidize-pdf` now advertises generation, parsing, modification, extraction, validation and document operations in pure Rust. citeturn15search1 The problem is not that Rust cannot implement PDF; it plainly can. The problem is that **a high-fidelity renderer, editor, forms implementation, annotation system, damaged-document recovery system and security-sensitive redaction engine represent many years of compatibility engineering**. Combining several independent Rust crates also creates a new challenge: one library may parse/rewrite objects differently from the renderer that ultimately displays them.
+
+For a personal experimental viewer, that would be interesting. For the application you described, it is the wrong risk profile.
+
+## Recommended architecture
+
+The recommended architecture is deliberately asymmetric: Slint owns **presentation**, Rust owns **application policy/state/concurrency**, and MuPDF owns **PDF semantics and rendering**.
+
+```mermaid
+flowchart TB
+    UI["Slint UI
+    tabs • toolbars • panels • dialogs"] --> VM["Rust Application / View Models"]
+
+    VM --> DC["Document Coordinator
+    one logical owner per open document"]
+    VM --> JOBS["Priority Job Scheduler"]
+
+    DC --> MUPDF["MuPDF Adapter
+    mupdf-rs + narrow raw FFI where required"]
+    MUPDF --> DOC["MuPDF Document / PDF Objects"]
+
+    DC --> DLIST["Display-List Cache"]
+    DLIST --> JOBS
+
+    JOBS --> W1["Render Worker"]
+    JOBS --> W2["Render Worker"]
+    JOBS --> WN["Render Worker"]
+
+    W1 --> TC["Bounded Tile Cache"]
+    W2 --> TC
+    WN --> TC
+
+    TC --> VIEW["Virtualized PDF Viewport"]
+    VIEW --> UI
+
+    DC --> TEXT["Text / Search Index"]
+    DC --> UNDO["Undo / Recovery State"]
+
+    VM --> SERVICES["Lazy Optional Services"]
+    SERVICES --> OCR["OCR worker / sidecar"]
+    SERVICES --> AI["Local or remote AI"]
+    SERVICES --> CONV["Conversion helper"]
+```
+
+The **UI thread should never synchronously parse or rasterize a PDF**. A mouse wheel event, pinch/zoom event, window resize or tab switch should manipulate viewport state and enqueue work; expensive engine calls belong elsewhere.
+
+The document coordinator should be the single authority for operations that touch mutable document state. For MuPDF, it loads pages, creates or invalidates display lists, performs annotations/content edits, saves documents and updates revision counters. This conforms to MuPDF's documented requirement that document access itself be serialized while still exploiting safe parallel display-list rendering. citeturn18view2
+
+A rendering request should carry something conceptually like:
+
+`{ document_id, page, content_revision, zoom_bucket, rotation, tile_rect, priority, generation }`
+
+The `generation` is important: if the user zooms from 100% to 175%, old 100% tile jobs should be allowed to complete harmlessly but discarded when they return rather than blocking the user or overwriting newer results.
+
+### Rendering pipeline
+
+```mermaid
+sequenceDiagram
+    participant U as Slint Viewport
+    participant S as Rust Scheduler
+    participant D as Document Coordinator
+    participant L as Display-List Cache
+    participant W as Render Worker Pool
+    participant C as Tile Cache
+
+    U->>S: visible pages / zoom / viewport
+    S->>C: query tile keys
+
+    alt cached tile exists
+        C-->>U: existing bitmap/texture
+    else display list missing
+        S->>D: request page interpretation
+        D->>D: serialized MuPDF page access
+        D->>L: cache display list
+    end
+
+    S->>W: render clipped tile
+    W->>W: clone MuPDF context
+    W->>L: replay immutable display list
+    W->>C: publish rendered tile
+    C-->>U: invalidate/repaint
+
+    Note over U,C: stale generations are ignored
+```
+
+This design has several benefits that derive directly from MuPDF's documented model: the expensive interpretation of a page can be cached, display lists can be replayed from multiple cloned contexts, and rendering can be prioritized around what the user can actually see. citeturn18view2
+
+**Do not render every page at current zoom.** Keep page geometry and low-resolution thumbnail metadata cheap, while full-resolution rasterization is limited to the viewport and a small prefetch region.
+
+A practical cache key would include document revision so that editing page 23 invalidates page 23's display list and tiles without throwing away page 1 through page 22. Annotation-only changes may permit even finer invalidation depending on how the engine's page/display-list API is used.
+
+### Integration patterns
+
+| Pattern | Data path | Advantages | Cost/risk | Recommendation |
+|---|---|---|---|---|
+| **CPU bitmap → Slint image** | MuPDF pixmap → Rust pixel buffer → Slint image | Simple, stable, easy to debug | CPU→GPU upload/copy | **Implement first** |
+| Persistent GPU texture | MuPDF bitmap → texture update → Slint | Reuses GPU allocation, can lower upload churn | Renderer/context coordination | POC after baseline |
+| Borrowed OpenGL texture | App-created GL texture → Slint | Potential low-copy display | Same-context requirement; lifetime/state complexity | Experimental optimization |
+| WGPU-native texture integration | Raster/upload into WGPU texture → UI renderer | Attractive if entire viewport becomes GPU-native | Slint WGPU-facing APIs are more evolving/renderer-specific | Later experiment |
+| Independent custom `wgpu` viewport | Slint around a custom/native render surface | Maximum control | Highest integration complexity | Only if profiling justifies it |
+
+Slint explicitly supports images backed by CPU buffers and borrowed OpenGL textures, but its GL texture support requires the same renderer context and correct lifetime management. citeturn21search0turn21search4 Therefore, the CPU bitmap path is the appropriate baseline. **Do not introduce GPU interop merely because “GPU = faster.”** MuPDF's expensive work is normally PDF interpretation and rasterization; GPU compositing only fixes the portion of the pipeline that actually reaches the GPU.
+
+The first performance experiment should compare three Slint configurations on the same viewport rather than guessing which wins:
+
+**software vs FemtoVG vs the best stable WGPU/Direct3D-capable renderer available in the selected Slint release.**
+
+Slint explicitly documents those renderer families and their trade-offs, including the larger footprint of Skia. citeturn21search8
+
+### Editing, undo, persistence and recovery
+
+MuPDF contains a genuine PDF journaling mechanism with named operations, transaction boundaries, abandon/revert, undo and redo operations. citeturn18view3turn18view7 This makes it unusually attractive for editor architecture, but I would **not couple the entire application undo model directly to the native journal**.
+
+Use two layers:
+
+**Application command history**
+
+`AddAnnotation`, `MoveAnnotation`, `DeletePages`, `ReplaceImage`, `EditTextObject`, `ApplyRedaction`, etc., containing enough metadata for UI history, dirty-state tracking and recovery.
+
+**Engine transaction**
+
+Wrap the corresponding MuPDF mutation inside an engine journal operation when the needed C API is exposed. The current high-level `mupdf-rs` surface should be checked feature-by-feature; when a needed stable MuPDF C operation is missing, add it through a tiny, audited FFI adapter rather than exposing arbitrary MuPDF pointers throughout the codebase. The recent `mupdf-rs` release history shows why keeping that unsafe boundary narrow is prudent: v0.8.0 included multiple FFI correctness and soundness fixes. citeturn20search0
+
+Crash recovery should not depend solely on in-memory undo. Maintain a recovery directory containing:
+
+- original-document identity/hash and timestamp;
+- application operation log;
+- periodic recoverable PDF checkpoint;
+- last successful save generation.
+
+The normal Save operation should produce a new output file and validate it before replacing the user's original. After saving, reopen the result, check page count/critical metadata, and rasterize at least modified pages. For high-risk operations such as redaction and signatures, run operation-specific validation before replacement.
+
+MuPDF supports incremental saving when the document state permits it, although some transformations can require full rewrites. citeturn4search1 Incremental save is useful for responsiveness and history-preserving workflows, but **full rewrite should remain available for sanitize/redact/optimize operations where retaining old object revisions is undesirable**.
+
+### OCR, conversion and AI
+
+OCR should be a **lazy subsystem**, not part of process startup.
+
+Tesseract remains an attractive baseline because it is an established open-source OCR engine with official language data covering 100+ languages and dozens of scripts. citeturn22search4 A scanned-page pipeline can be:
+
+`MuPDF raster → preprocessing → OCR → word boxes/confidence → hidden searchable text layer or extracted-text index`.
+
+Windows' newer text-recognition API is also worth supporting as an optional accelerator. Microsoft's current documentation says it returns characters, words, lines, polygonal boundaries and confidence levels, but the current API executes only on supported NPU-equipped devices. citeturn23search3 Consequently it cannot be the universal OCR backend for arbitrary Windows 11 PCs.
+
+For more sophisticated table/layout/formula extraction, PaddleOCR is an interesting optional worker. Its current project describes 100+ language support, and its document-parsing models target complex elements such as tables, formulas and charts. citeturn22search1turn22search5 I would run it **out of process** because its model/runtime dependency set is much heavier than the PDF viewer and has no reason to affect application startup.
+
+Conversion should likewise be componentized. MuPDF can own PDF-centric raster/text/extraction workflows; for installed-office-document → PDF conversion, LibreOffice officially supports unattended command-line `--convert-to pdf` workflows. citeturn22search10turn22search3 High-fidelity **PDF → DOCX/XLSX/PPTX** is a separate document-reconstruction problem, not something the core architecture magically solves. Treat it as an optional conversion provider rather than contaminating the renderer with Office-format logic.
+
+AI should be even more isolated:
+
+`document text/index → retrieval/chunking → optional model process/API`.
+
+A local engine such as `llama.cpp` is explicitly designed for local LLM/VLM inference on a range of hardware. citeturn22search2 It should not be loaded until the user invokes an AI feature. Remote inference should similarly be a replaceable provider. The viewer/editor must remain fully functional with AI completely disabled.
+
+That produces an important architectural principle:
+
+> **The application should be a premium PDF editor with optional intelligence—not an AI application that happens to display PDFs.**
+
+### Windows packaging
+
+Use the Rust MSVC Windows target for the primary x64 build; Rust officially supports target-specific builds and C/C++ interoperability through normal native linkage mechanisms. citeturn15search2turn15search22
+
+For your personal-use scenario, the simplest deployment target should initially be a **portable release directory** containing the executable and required native dependencies. An installer can be added once the application is stable. `mupdf-rs` builds the native MuPDF dependency through its lower-level `mupdf-sys` layer, whereas `pdfium-render` supports both packaged dynamic PDFium libraries and static linkage. citeturn20search2turn20search1
+
+Avoid putting OCR models, Paddle runtimes or local LLM weights into the baseline package. Download/configure them separately or keep them in optional feature bundles. That preserves the startup and disk-footprint characteristics of the core application.
+
+## Comparative decision matrix
+
+The following scoring is deliberately weighted toward your stated priorities rather than toward ecosystem popularity.
+
+Weights:
+
+| Criterion | Weight |
+|---|---:|
+| Cold/warm startup | 13% |
+| UI responsiveness | 9% |
+| PDF rendering performance | 14% |
+| Memory efficiency | 8% |
+| Very-large-document behavior | 8% |
+| Overall PDF feature breadth | 10% |
+| Advanced editing feasibility | 12% |
+| Fidelity/reliability | 10% |
+| Integration simplicity | 7% |
+| AI-assisted development feasibility | 9% |
+| **Total** | **100%** |
+
+Scores are from 1–10 and are **analytical estimates**, not benchmark results. They reflect the documented engine/toolkit constraints above and should be superseded by POC measurements.
+
+| Candidate | Start | UI | Render | Memory | Large docs | Breadth | Editing | Fidelity | Integration | LLM dev | Weighted |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| **Slint + MuPDF** | 9 | 9 | 9 | 8 | 9 | 9 | 9 | 9 | 8 | 8 | **8.76** |
+| **egui + MuPDF** | 9 | 8 | 9 | 8 | 9 | 9 | 9 | 9 | 8 | 8 | **8.67** |
+| **winit + wgpu + MuPDF** | 10 | 10 | 9 | 8 | 9 | 9 | 9 | 9 | 5 | 4 | **8.41** |
+| **Iced + MuPDF** | 8 | 8 | 9 | 8 | 9 | 9 | 9 | 9 | 7 | 7 | **8.38** |
+| **Slint + PDFium** | 8 | 9 | 8 | 8 | 7 | 8 | 7 | 9 | 8 | 8 | **7.99** |
+| **Slint + pure Rust** | 10 | 9 | 7 | 9 | 7 | 5 | 4 | 5 | 8 | 7 | **7.04** |
+
+**Why Slint + MuPDF wins:** it has no obvious hard blocker in the core feature set and its PDF engine's concurrency model aligns exceptionally well with a responsive tiled viewport. MuPDF's display lists, edit surface, annotations/forms/redaction support, journal operations and save model are more important here than the final few percentage points one might theoretically gain from writing an entire renderer UI directly on `wgpu`. citeturn18view2turn20search2turn18view3
+
+**Why egui + MuPDF is so close:** egui's immediate-mode model and texture-oriented nature are excellent for custom render surfaces. citeturn21search2 If the application were primarily a fast reader/annotator with relatively little conventional desktop UI, I would consider it nearly tied with Slint. The more the application grows toward “Acrobat replacement,” however, the more I prefer a declarative retained UI for complex forms, inspectors, settings, stateful panels and large editing workflows.
+
+**Why raw winit + wgpu does not win despite performance potential:** WGPU gives direct native D3D12/Vulkan/etc. access. citeturn21search3 But PDF pages are ultimately coming from MuPDF's CPU-side rendering path, so building a custom GUI framework does not automatically make PDF interpretation faster. You assume a major engineering burden for an optimization whose benefit has not yet been demonstrated.
+
+**Why PDFium loses:** not because its renderer is weak, but because its public API requires global serialization of PDFium calls. citeturn19view0 That constraint becomes increasingly expensive as the feature set grows. It remains the strongest fallback if permissive licensing later becomes more important than maximum architectural flexibility.
+
+**Why pure Rust does not yet win:** its potential startup/deployment simplicity is real, but the pure-Rust renderer ecosystem itself still describes major components such as Hayro as experimental/work in progress. citeturn10search1 For a viewer/editor whose third priority is document fidelity, that is too large a gamble today.
+
+### Feature-level verdict for the recommended stack
+
+| Feature group | Rust + Slint + MuPDF assessment |
+|---|---|
+| Viewing / navigation | **Excellent** |
+| Search / text extraction | **Excellent** |
+| Thumbnails / outlines / links | **Excellent** |
+| Highlight / notes / ink / shapes | **Excellent foundation** |
+| Merge / split / reorder / crop / rotate | **Excellent foundation** |
+| Existing text/object editing | **Capable foundation, substantial UX/layout engineering required** |
+| Image replacement/manipulation | **Strong** |
+| Forms/widgets | **Strong** |
+| Redaction | **Strong engine support; must add validation** |
+| OCR | **External component required** |
+| PDF → image/text | **Strong** |
+| Office → PDF | **External converter appropriate** |
+| PDF → editable Office | **Hard; separate conversion problem** |
+| Batch processing | **Excellent fit for Rust scheduler** |
+| Undo/redo | **MuPDF journal + application command layer** |
+| AI features | **Straightforward as lazy optional subsystem** |
+
+The fundamental distinction is between **engine-supported PDF mutation** and **premium editing UX**. MuPDF gives you the former. Your application still has to build selection hit-testing, handles, alignment guides, font substitution policy, object grouping, text-line reconstruction, undo semantics and user-friendly editing behavior.
+
+## Performance targets and benchmarking
+
+There is no defensible way to promise that “Rust + Slint launches in X milliseconds” without measuring the resulting executable. Therefore, the numbers below are **acceptance targets**, not claims about existing performance.
+
+For a reasonably modern Windows 11 desktop with an NVMe SSD, I would establish the following POC bars:
+
+| Metric | Initial acceptance target | Stretch target |
+|---|---:|---:|
+| Process launch → visible empty window, cold | ≤ 300 ms p50 | ≤ 200 ms |
+| Warm launch → visible window | ≤ 150 ms p50 | ≤ 100 ms |
+| Open small local PDF → first usable page | ≤ 250 ms p50 | ≤ 150 ms |
+| First-page render, ordinary text/vector page | ≤ 100 ms after page interpretation | ≤ 50 ms |
+| Complex page first render | ≤ 400 ms | ≤ 250 ms |
+| Cached page return | ≤ 16 ms application-side | ≤ 8 ms |
+| Normal scroll | no visible blocking on UI thread | sustained refresh-rate pacing |
+| Zoom input → immediate visual response | ≤ one display frame | same |
+| High-quality rerender after zoom settles | ≤ 150 ms ordinary visible tile | ≤ 75 ms |
+| Tab switch to cached document | ≤ 50 ms | ≤ 25 ms |
+| Idle application working set | ≤ 100–150 MB | <100 MB |
+| Active raster cache | explicit configurable budget | no unbounded growth |
+| 1,000-page document opening | no eager full-page rendering | same |
+| Background OCR/search while scrolling | no significant UI-frame regression | <5% frame-time regression |
+
+A 60 Hz display gives roughly **16.7 ms per frame**, while a 120 Hz display gives roughly **8.3 ms**. The important requirement is not that PDF rasterization finish inside that budget; it is that the **UI/event/composition path** does. Rendering can complete asynchronously.
+
+The application should instrument its own pipeline with monotonic timestamps:
+
+`process_start`  
+`slint_window_created`  
+`first_frame_presented`  
+`document_open_started`  
+`document_parsed`  
+`page_loaded`  
+`display_list_ready`  
+`tile_render_started`  
+`tile_render_finished`  
+`tile_available_to_ui`  
+`frame_presented`
+
+Without this instrumentation, a “PDF opened in 200 ms” result cannot tell you whether the bottleneck was disk I/O, parser work, bitmap rendering, CPU→GPU upload, Slint layout or frame presentation.
+
+### Test document suite
+
+Build a permanent benchmark corpus rather than repeatedly testing whatever PDF happens to be nearby.
+
+| Corpus case | Purpose |
+|---|---|
+| 1-page mostly text PDF | Startup / baseline first-page latency |
+| 20-page office-style PDF | Ordinary browsing |
+| 100-page mixed text/image PDF | Typical medium document |
+| 1,000–5,000-page generated document | Page-tree/navigation scalability |
+| 200-page 300-DPI scanned PDF | Image decode/cache/OCR |
+| Large engineering/vector PDF | Path/raster stress |
+| Heavy transparency/soft-mask PDF | Renderer stress |
+| Type 3 / unusual embedded-font documents | Font/fidelity stress |
+| Annotated PDF | annotation rendering/editing |
+| AcroForm PDF | interactive-form behavior |
+| Password-encrypted PDFs | security/loading |
+| Damaged/repaired PDFs | parser robustness |
+| Signed PDFs | save/signature-preservation checks |
+| Redaction test document | recovery/security verification |
+
+Do **not** benchmark only trivial generated PDFs. Include externally produced files from several generators because interoperability failures generally occur in documents your own stack did not create.
+
+### Benchmark methodology
+
+Cold and warm runs must be reported separately. A warm file-system cache can dramatically alter apparent launch/open times. Hyperfine explicitly supports repeated runs, warmup runs, setup commands and statistical reporting, making it useful for process-level launch tests. citeturn23search2
+
+For Windows-level diagnosis, use **Windows Performance Recorder and Windows Performance Analyzer**. Microsoft describes WPR as an ETW-based recorder for system/application events and WPA as the corresponding analysis tool for understanding resource consumption and bottlenecks. citeturn23search0turn23search4
+
+For viewport/frame behavior, PresentMon can capture CPU, GPU and display frame durations/latencies for Windows graphics applications across DirectX, OpenGL and Vulkan. citeturn23search1
+
+The benchmark protocol should be:
+
+1. Release build with symbols retained separately.
+2. Fixed Windows power plan and monitor refresh configuration.
+3. Same executable and PDF corpus for every candidate.
+4. Thirty or more warm iterations for micro/launch metrics; separate controlled cold runs.
+5. Record p50, p95 and p99—not only averages.
+6. Record working set, private bytes, CPU time, total allocations where possible and GPU memory.
+7. Repeat on both integrated and discrete graphics if available.
+8. Compare Slint renderer configurations without changing the PDF engine.
+9. Then compare MuPDF vs PDFium with the same viewport/caching policy.
+10. Keep all raw benchmark files in the repository.
+
+The **most important POC comparison** is not “Rust versus C#” or “Slint versus egui.” It is:
+
+> same machine + same PDFs + same tile size/cache rules + same zoom workload + different engine/UI integration.
+
+### Experiments that could overturn the recommendation
+
+The recommendation should be abandoned or revised if the POC demonstrates any of these:
+
+**Slint viewport bottleneck:** CPU→GPU image upload or repaint costs materially dominate scrolling despite a properly bounded tile cache.
+
+**Binding blocker:** `mupdf-rs` lacks critical edit/form/redaction APIs and filling the gaps requires an unsafe FFI layer large enough to undermine maintainability.
+
+**MuPDF edit failure:** representative production PDFs cannot be edited while preserving acceptable fidelity.
+
+**PDFium outperforms materially:** despite serialized API calls, PDFium delivers clearly superior time-to-first-page and viewport latency on the relevant corpus while satisfying the required editing/redaction feature tests.
+
+**Pure Rust catches up:** Hayro plus a manipulation stack passes the same fidelity corpus and edit tests. At that point eliminating the C boundary becomes genuinely attractive.
+
+Those are evidence-based decision gates rather than architectural ideology.
+
+## Reliability, licensing, and critical risks
+
+### Major technical risks
+
+| Risk | Severity | Why it matters | Mitigation |
+|---|---|---|---|
+| Existing-text editing fidelity | **Critical** | PDF objects are not word-processing paragraphs | Prototype immediately against difficult font/layout samples |
+| Font substitution / embedded fonts | **Critical** | Changing text may require unavailable glyphs/fonts | Inspect embedded font data, explicit substitution policy, visual diff |
+| FFI ownership/lifetimes | **Critical** | Native handles can outlive parents or cross wrong threads | One adapter crate, typed handles, no raw pointers outside adapter |
+| Secure redaction | **Critical** | Visual black boxes are not secure deletion | Apply engine redaction, full rewrite where appropriate, extraction/raw-object validation |
+| Save corruption | **Critical** | Editor must never destroy original | temp output, reopen/validate, then replace |
+| Rendering cache growth | High | Scrolling/zoom can allocate huge bitmaps | hard byte budget + LRU + generation cancellation |
+| Stale renders after edit | High | old tile may overwrite new content | revision/generation in every render key |
+| Thread misuse | High | MuPDF has specific context/document rules | coordinator + cloned worker contexts exactly matching documented model |
+| Binding version lag | High | Rust wrapper currently trails MuPDF core | pin versions; narrow raw-C extensions where justified |
+| OCR/model dependency bloat | Medium | harms startup/package size | out-of-process, lazy start |
+| AI feature creep | Medium | can destabilize core performance | independent provider/service boundary |
+| GUI renderer changes | Medium | texture interop paths may evolve | keep stable CPU image path as fallback |
+
+MuPDF's explicit documented rule—that page access occurs under controlled document access and rendering workers clone contexts to replay display lists—is valuable precisely because it gives the Rust concurrency model a clear set of invariants. citeturn18view2 Model those invariants in types rather than relying on comments.
+
+For example, the document coordinator can own a `DocumentHandle` type that is intentionally not exposed as `Send + Sync`; render workers instead receive an engine-owned immutable display-list handle prepared for concurrent replay. That makes it harder for an AI coding agent to accidentally call arbitrary MuPDF document functions from Rayon/Tokio workers.
+
+### Fidelity verification strategy
+
+Saving without an error is not sufficient.
+
+For every mutation test:
+
+**structural validation:** reopen the output and enumerate pages/resources.
+
+**visual validation:** render before/after images; require unaffected regions to remain pixel-identical or within a defined antialiasing tolerance.
+
+**semantic validation:** extract text and compare expected changes.
+
+**cross-engine sanity check:** periodically render the resulting output in a second independent engine—PDFium is a good candidate even if MuPDF remains primary.
+
+**round-trip validation:** save → close → reopen → edit again → save again.
+
+**fuzz/regression corpus:** every PDF that ever exposes a bug becomes a permanent automated test case.
+
+Redaction requires additional tests: verify the sensitive string cannot be recovered by text extraction, object walking, embedded streams, annotations, metadata or incremental-history remnants. MuPDF exposes redaction functionality through its PDF API and Rust wrapper; that is a much stronger starting point than an overlay implementation. citeturn20search2
+
+### Licensing implications for personal use
+
+For your exact stated scenario—**you alone use the application and you are not redistributing it**—MuPDF's AGPL licensing is substantially less inconvenient than it would be for a proprietary distributed product. MuPDF's official release page states that its open-source releases use the AGPL, with commercial licensing offered as the alternative for embedding it into proprietary products. citeturn16search4
+
+The AGPL's distinctive network provision applies to users interacting remotely with a modified covered program over a computer network, while GNU's licensing FAQ explains that distribution/conveyance and network interaction are the events relevant to source-code obligations. citeturn16search1turn16search5 For a private, local personal application that is not conveyed to other people and is not being offered as a network service, this makes MuPDF much more practical than it would be for a commercial closed-source desktop product. That is a licensing interpretation for engineering planning, not a substitute for legal advice if the usage model later changes.
+
+`mupdf-rs` itself is also distributed under AGPL-3.0. citeturn20search2
+
+Slint has a royalty-free desktop/mobile/web license in addition to GPL and commercial arrangements. Its current license grants use, modification and distribution for desktop applications, and Slint's own materials describe its royalty-free desktop option as suitable for proprietary applications, with attribution requirements. citeturn16search2turn16search18 Your personal application is therefore straightforward from the Slint side.
+
+PDFium uses a BSD-style license for its own source, with the usual need to retain and review licenses for bundled third-party components. citeturn16search3turn16search7 This is PDFium's strongest nontechnical advantage.
+
+There is therefore a very clear trade-off:
+
+| Engine | Personal/private use | If you later distribute closed source |
+|---|---|---|
+| **MuPDF** | Very attractive technically | AGPL obligations become important unless commercially licensed |
+| **PDFium** | Attractive | Much easier permissive-license path |
+| **Pure Rust stack** | Depends on component licenses | Audit each crate/dependency |
+
+Since you specifically said redistribution is not a concern, **I would not sacrifice MuPDF's technical advantages merely to obtain PDFium's easier redistribution story.**
+
+## Implementation roadmap and decision gates
+
+The biggest mistake would be to build menus, settings, AI features and dozens of commands before proving the viewport and mutation model. The roadmap should attack uncertainty in decreasing order of architectural risk.
+
+| Milestone | Scope | Required evidence before proceeding | Main decision |
+|---|---|---|---|
+| **Renderer micro-POC** | Rust + minimal Slint window + MuPDF open/render | first-page time, bitmap path, memory, no UI blocking | Is Slint/MuPDF viable at all? |
+| **Virtualized viewport** | continuous scroll, zoom, tiles, LRU, prefetch | frame-time and memory benchmark on large PDFs | Is image upload/composition a bottleneck? |
+| **Parallel display-list renderer** | coordinator + display lists + worker contexts | scaling across 2/4/8 workers | Does MuPDF concurrency deliver expected benefit? |
+| **PDFium comparison POC** | same viewport contract with PDFium | identical corpus/results | Is MuPDF actually the better engine on your hardware? |
+| **Annotation pipeline** | highlight, ink, notes, shapes, save/reopen | interoperability and undo correctness | Can mutation architecture remain clean? |
+| **Editing POC** | modify existing text, image replacement, fonts | fidelity corpus and visual diff | Is premium content editing credible? |
+| **Redaction POC** | mark/apply/save/sanitize/verify | unrecoverability tests | Is engine-level redaction trustworthy? |
+| **Forms POC** | common AcroForm fields and JS behavior | fill/save/reopen interoperability | Are forms sufficient? |
+| **OCR pipeline** | Tesseract baseline, searchable scanned PDF | speed, accuracy, coordinate mapping | Is local OCR good enough? |
+| **Persistence/recovery** | undo, autosave, crash simulation | forced-kill recovery testing | Is data-loss risk acceptable? |
+| **Batch engine** | queue/cancel/progress/multi-document jobs | UI remains responsive under load | Is scheduling architecture sound? |
+| **Optional advanced OCR/AI** | Paddle/Windows OCR/local or remote LLM | zero baseline-startup regression | Can intelligence stay isolated? |
+| **Packaging/optimization** | release build, dependencies, installer | repeatable clean-machine startup tests | Ready for daily use |
+
+**Renderer micro-POC.** The first program should contain almost nothing besides a window, file-open action and one PDF surface. Instrument startup before adding settings databases, plugin discovery, recent-file scanning or model initialization. Slint offers multiple renderer choices, so compile/test the realistic candidates instead of assuming the most GPU-heavy option is the fastest. citeturn21search8
+
+**Virtualized viewport.** Add continuous scrolling with only visible pages/tiles resident at full resolution. Test 256-, 512- and 1024-pixel tile strategies rather than treating tile dimensions as doctrine. Record cache hit rate, bytes uploaded per second and frame-time distribution.
+
+**Display-list experiment.** Make this a formal benchmark. Compare:
+
+`load page + raster each time`
+
+against
+
+`load page → build display list once → raster tiles repeatedly from display list`.
+
+Then render neighboring pages concurrently with cloned MuPDF contexts, following MuPDF's documented threading pattern. citeturn18view2 If that architecture does **not** materially improve heavy scrolling/zoom workloads, investigate why before building the editor.
+
+**PDFium control experiment.** Implement the same engine trait around `pdfium-render`, with the exact same viewport and cache. `pdfium-render` supports rendering into bitmaps and partial rendering and can bind dynamically or statically to PDFium. citeturn20search1 This experiment is important because it turns the engine choice into a measured decision rather than a preference.
+
+**Annotation POC.** Support highlight, sticky note, ink and one shape. Save, close and reopen in both your application and a second PDF implementation. This validates coordinate transforms, appearance streams, save semantics, hit testing and undo before more dangerous document edits.
+
+**Editing POC.** This is the most important feature gate after rendering. Select ten deliberately difficult PDFs containing subset fonts, CID fonts, rotated text, mixed font sizes, transparency and overlapping graphics. Perform existing-text replacement and image changes. PDFium demonstrates that low-level APIs such as text replacement and positioning exist; the POC must establish whether the full user-facing operation can preserve layout well enough to be called a premium editor rather than an object debugger. citeturn17search2
+
+**OCR POC.** Start with Tesseract because it is local, mature and multilingual. citeturn22search4 Add Windows OCR as a capability-detected path on supported NPU hardware, not as a dependency. citeturn23search3 Test OCR separately from PDF generation: recognition accuracy, coordinate accuracy, searchable-text insertion and file-size growth are different metrics.
+
+**AI last.** Local `llama.cpp`, Paddle-based document understanding or remote models should be separate executables/providers loaded only when invoked. citeturn22search1turn22search2 No AI subsystem should execute on process startup, participate in normal page rendering, or own canonical document state.
+
+The practical end-state I would target is therefore:
+
+> **Rust + Slint + MuPDF**
+>
+> **Slint:** application shell, panels, dialogs, toolbars, tabs and viewport composition  
+> **Rust core:** document models, scheduler, cache, command history, automation and persistence  
+> **MuPDF:** authoritative PDF parsing, display lists, rendering, content operations, annotations, forms and redaction  
+> **MuPDF coordinator + cloned render contexts:** concurrency model  
+> **Bounded tile/display-list caches:** scrolling and zoom responsiveness  
+> **Tesseract:** baseline local OCR  
+> **Windows OCR:** optional hardware-accelerated OCR where supported  
+> **PaddleOCR:** optional heavy document-layout/table pipeline in a helper process  
+> **LibreOffice/other dedicated providers:** optional office conversion  
+> **llama.cpp or remote provider:** optional lazy AI  
+> **PDFium:** development-time comparison/fidelity oracle and serious fallback engine
+
+The decisive architectural test is **not whether a simple page renders**. All of these stacks can do that. The decisive test is whether, on the same Windows machine, Slint + MuPDF can simultaneously deliver **fast first-page display, fluid continuous scrolling, bounded memory, parallel background work, reliable mutations and acceptable real-world edit fidelity**.
+
+Based on the current engine APIs and ecosystem state, **Slint + MuPDF is the architecture I would put through that test first, and it is the one I would expect to win.**

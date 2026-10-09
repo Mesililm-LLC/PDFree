@@ -1,0 +1,49 @@
+{
+  "results": [
+    {
+      "capture_directory": "benchmarks\\captures\\corpus\\7f49d8da-17f2-4b52-a5c0-b1635640bc3e\\w3c-dummy",
+      "document_sha256": "3DF79D34ABBCA99308E79CB94461C1893582604D68329A41FD4BEC1885E6ADB4",
+      "completed": true,
+      "document": "w3c-dummy"
+    },
+    {
+      "capture_directory": "benchmarks\\captures\\corpus\\7f49d8da-17f2-4b52-a5c0-b1635640bc3e\\tracemonkey",
+      "document_sha256": "3662FF519E485810520552BF301D8C3B2B917FD2F83303F4965D7ABED367E113",
+      "completed": true,
+      "document": "tracemonkey"
+    },
+    {
+      "capture_directory": "benchmarks\\captures\\corpus\\7f49d8da-17f2-4b52-a5c0-b1635640bc3e\\transparency",
+      "document_sha256": "EE8555A6B8DD6462B9D71322121B694C745572524E73E7AA847792482494A7D5",
+      "completed": true,
+      "document": "transparency"
+    },
+    {
+      "capture_directory": "benchmarks\\captures\\corpus\\7f49d8da-17f2-4b52-a5c0-b1635640bc3e\\vector",
+      "document_sha256": "AE9551D05674AAC2D8F6CA4DE91CE0486DC8169C33BFF5EAB8424A3CB8ABC6E2",
+      "completed": true,
+      "document": "vector"
+    },
+    {
+      "capture_directory": "benchmarks\\captures\\corpus\\7f49d8da-17f2-4b52-a5c0-b1635640bc3e\\scan",
+      "document_sha256": "768FD4F2CFEEBD7C6E7C20A17495FA01D7102F4721EC36C69128922D22B00DEF",
+      "completed": true,
+      "document": "scan"
+    },
+    {
+      "capture_directory": "benchmarks\\captures\\corpus\\7f49d8da-17f2-4b52-a5c0-b1635640bc3e\\mixed",
+      "document_sha256": "5A9C1086B3A09398F31D47F6235E02D986A4BD700076B5122BCF857A80BEB895",
+      "completed": true,
+      "document": "mixed"
+    },
+    {
+      "capture_directory": "benchmarks\\captures\\corpus\\7f49d8da-17f2-4b52-a5c0-b1635640bc3e\\thousand",
+      "document_sha256": "73EFE21724446B7BBE67560A78955CB72935136E883DB63389297715602A1FDA",
+      "completed": true,
+      "document": "thousand"
+    }
+  ],
+  "kind": "functional smoke; not a controlled timing run",
+  "renderer": "winit-software",
+  "executable_sha256": "A6C20B70F15F2C24A8071D877348E09D6ED411E768A89BF4EBAF5FC08230336A"
+}

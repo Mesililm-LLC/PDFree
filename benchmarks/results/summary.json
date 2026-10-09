@@ -1,0 +1,151 @@
+[
+  {
+    "report": "warm-empty-femtovg.json",
+    "trials": 20,
+    "executable_sha256": "A6C20B70F15F2C24A8071D877348E09D6ED411E768A89BF4EBAF5FC08230336A",
+    "window_show_request_ms": {
+      "p50": 1000.62265,
+      "p95": 1528.7952,
+      "max": 1800.8541
+    },
+    "open_to_first_tile_publication_ms": null,
+    "tile_render_ms": null,
+    "peak_working_set_mib": {
+      "p50": 66.173828125,
+      "p95": 77.76953125,
+      "max": 77.80078125
+    },
+    "peak_private_mib": {
+      "p50": 81.134765625,
+      "p95": 97.58984375,
+      "max": 97.78125
+    },
+    "max_raster_cache_mib": 0.0,
+    "cache_hits": 0,
+    "cache_misses": 0
+  },
+  {
+    "report": "warm-empty-wgpu.json",
+    "trials": 20,
+    "executable_sha256": "FA14CD6D699EF0C342AC675F956E97BAE99ADD973C0321E2860C7AFB0AE20C1F",
+    "window_show_request_ms": {
+      "p50": 1180.4261499999998,
+      "p95": 1450.2222,
+      "max": 1555.7335
+    },
+    "open_to_first_tile_publication_ms": null,
+    "tile_render_ms": null,
+    "peak_working_set_mib": {
+      "p50": 130.830078125,
+      "p95": 131.5546875,
+      "max": 131.9140625
+    },
+    "peak_private_mib": {
+      "p50": 156.671875,
+      "p95": 157.453125,
+      "max": 157.6796875
+    },
+    "max_raster_cache_mib": 0.0,
+    "cache_hits": 0,
+    "cache_misses": 0
+  },
+  {
+    "report": "warm-office-femtovg.json",
+    "trials": 20,
+    "executable_sha256": "A6C20B70F15F2C24A8071D877348E09D6ED411E768A89BF4EBAF5FC08230336A",
+    "window_show_request_ms": {
+      "p50": 1266.3543,
+      "p95": 2742.6324,
+      "max": 3878.774
+    },
+    "open_to_first_tile_publication_ms": {
+      "p50": 1027.5927000000001,
+      "p95": 2210.3655999999996,
+      "max": 5392.983
+    },
+    "tile_render_ms": {
+      "p50": 1.1020500000000002,
+      "p95": 4.0950999999999995,
+      "max": 40.0873
+    },
+    "peak_working_set_mib": {
+      "p50": 133.533203125,
+      "p95": 134.5703125,
+      "max": 137.51171875
+    },
+    "peak_private_mib": {
+      "p50": 160.103515625,
+      "p95": 162.41015625,
+      "max": 164.34375
+    },
+    "max_raster_cache_mib": 40.07645797729492,
+    "cache_hits": 2519,
+    "cache_misses": 1721
+  },
+  {
+    "report": "warm-office-software.json",
+    "trials": 20,
+    "executable_sha256": "A6C20B70F15F2C24A8071D877348E09D6ED411E768A89BF4EBAF5FC08230336A",
+    "window_show_request_ms": {
+      "p50": 45.1833,
+      "p95": 115.45320000000001,
+      "max": 134.6298
+    },
+    "open_to_first_tile_publication_ms": {
+      "p50": 117.16029999999999,
+      "p95": 272.4733,
+      "max": 284.95759999999996
+    },
+    "tile_render_ms": {
+      "p50": 1.0493999999999999,
+      "p95": 2.0629,
+      "max": 10.0985
+    },
+    "peak_working_set_mib": {
+      "p50": 75.181640625,
+      "p95": 76.33203125,
+      "max": 76.953125
+    },
+    "peak_private_mib": {
+      "p50": 58.478515625,
+      "p95": 59.08984375,
+      "max": 59.4609375
+    },
+    "max_raster_cache_mib": 40.07645797729492,
+    "cache_hits": 2651,
+    "cache_misses": 2054
+  },
+  {
+    "report": "warm-office-wgpu.json",
+    "trials": 20,
+    "executable_sha256": "FA14CD6D699EF0C342AC675F956E97BAE99ADD973C0321E2860C7AFB0AE20C1F",
+    "window_show_request_ms": {
+      "p50": 1140.0046499999999,
+      "p95": 1915.0143,
+      "max": 2158.0632
+    },
+    "open_to_first_tile_publication_ms": {
+      "p50": 1446.0075000000002,
+      "p95": 2560.1204,
+      "max": 2629.4097
+    },
+    "tile_render_ms": {
+      "p50": 0.8951,
+      "p95": 1.9935,
+      "max": 13.4952
+    },
+    "peak_working_set_mib": {
+      "p50": 185.103515625,
+      "p95": 193.1328125,
+      "max": 236.80859375
+    },
+    "peak_private_mib": {
+      "p50": 235.232421875,
+      "p95": 241.45703125,
+      "max": 262.328125
+    },
+    "max_raster_cache_mib": 40.07645797729492,
+    "cache_hits": 2092,
+    "cache_misses": 1034
+  }
+]

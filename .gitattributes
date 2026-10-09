@@ -1,0 +1,8 @@
+* text=auto
+*.pdf binary
+*.png binary
+"# Rust + Slint + Native PDF Engine.txt" -text
+Cargo.lock text eol=lf
+*.rs text eol=lf
+*.slint text eol=lf
+*.py text eol=lf

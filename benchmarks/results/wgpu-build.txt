@@ -1,0 +1,80 @@
+   Compiling smallvec v1.16.2
+   Compiling hashbrown v0.17.1
+   Compiling zerocopy v0.8.62
+   Compiling windows v0.62.2
+   Compiling rustc-hash v1.1.0
+   Compiling naga v30.0.1
+   Compiling indexmap v2.14.2
+   Compiling ash v0.38.0+1.3.281
+   Compiling parking_lot_core v0.9.12
+   Compiling bit-vec v0.9.1
+   Compiling naga-types v30.0.1
+   Compiling libc v0.2.190
+   Compiling unicode-width v0.2.2
+   Compiling codespan-reporting v0.13.1
+   Compiling bit-set v0.10.0
+   Compiling spirv v0.4.0+sdk-1.4.341.0
+   Compiling static_assertions v1.1.0
+   Compiling khronos-egl v6.0.0
+   Compiling unicode-ident v1.0.26
+   Compiling lock_api v0.4.14
+   Compiling wgpu-types v30.0.1
+   Compiling half v2.7.1
+   Compiling wgpu-hal v30.0.1
+   Compiling presser v0.3.1
+   Compiling parking_lot v0.12.5
+   Compiling icu_normalizer v2.3.0
+   Compiling ordered-float v5.5.0
+   Compiling renderdoc-sys v1.1.0
+   Compiling profiling v1.0.18
+   Compiling glow v0.17.0
+   Compiling range-alloc v0.1.5
+   Compiling kurbo v0.13.1
+   Compiling wgpu-naga-bridge v30.0.1
+   Compiling harfrust v0.12.0
+   Compiling wgpu-core v30.0.1
+   Compiling gpu-allocator v0.28.0
+   Compiling litrs v1.0.0
+   Compiling document-features v0.2.12
+   Compiling svgtypes v0.16.1
+   Compiling wgpu v30.0.1
+   Compiling wgpu-core-deps-windows-linux-android v30.0.1
+   Compiling fontique v0.11.1
+   Compiling usvg v0.48.1
+   Compiling fixed_decimal v0.7.2
+   Compiling icu_decimal v2.3.0
+   Compiling resvg v0.48.1
+   Compiling icu_segmenter v2.3.0
+   Compiling i-slint-common v1.18.1
+   Compiling parley v0.11.1
+   Compiling idna_adapter v1.2.2
+   Compiling idna v1.1.0
+   Compiling i-slint-core v1.18.1
+   Compiling femtovg v0.27.0
+   Compiling url v2.5.8
+   Compiling i-slint-backend-winit v1.18.1
+   Compiling webbrowser v1.2.4
+   Compiling i-slint-backend-selector v1.18.1
+   Compiling mupdf-sys v0.8.0
+   Compiling pdfree v0.1.0 (D:\Dev\PDFree\crates\pdfree)
+   Compiling mupdf v0.8.0
+   Compiling i-slint-renderer-software v1.18.1
+   Compiling i-slint-renderer-femtovg v1.18.1
+   Compiling pdf-engine v0.1.0 (D:\Dev\PDFree\crates\pdf-engine)
+   Compiling slint v1.18.1
+warning: linker stdout: libmupdf.lib(context.obj) : MSIL .netmodule or module compiled with /GL found; restarting link with /LTCG; add /LTCG to the link command line to improve linker performance␍
+         D:\Dev\PDFree\target\release\build\mupdf-sys-968746cc7afa5899\out\build\source\fitz\error.c(362) : warning C4702: unreachable code␍
+         D:\Dev\PDFree\target\release\build\mupdf-sys-968746cc7afa5899\out\build\source\fitz\brotli.c(136) : warning C4702: unreachable code␍
+         D:\Dev\PDFree\target\release\build\mupdf-sys-968746cc7afa5899\out\build\source\fitz\filter-brotli.c(133) : warning C4702: unreachable code␍
+         D:\Dev\PDFree\target\release\build\mupdf-sys-968746cc7afa5899\out\build\thirdparty\tesseract\src\ccstruct\quadlsq.cpp(133) : warning C4723: potential divide by 0␍
+         D:\Dev\PDFree\target\release\build\mupdf-sys-968746cc7afa5899\out\build\source\fitz\compressed-buffer.c(132) : warning C4702: unreachable code␍
+         D:\Dev\PDFree\target\release\build\mupdf-sys-968746cc7afa5899\out\build\source\fitz\compressed-buffer.c(134) : warning C4702: unreachable code␍
+         D:\Dev\PDFree\target\release\build\mupdf-sys-968746cc7afa5899\out\build\thirdparty\tesseract\src\ccstruct\quadlsq.cpp(133) : warning C4723: potential divide by 0␍
+         D:\Dev\PDFree\target\release\build\mupdf-sys-968746cc7afa5899\out\build\source\pdf\pdf-write.c(961) : warning C4702: unreachable code␍
+         D:\Dev\PDFree\target\release\build\mupdf-sys-968746cc7afa5899\out\build\source\pdf\pdf-write.c(871) : warning C4702: unreachable code␍
+         D:\Dev\PDFree\target\release\build\mupdf-sys-968746cc7afa5899\out\build\source\pdf\pdf-write.c(873) : warning C4702: unreachable code
+  |
+  = note: `#[warn(linker_messages)]` on by default
+
+warning: `pdfree` (bin "pdfree") generated 1 warning
+    Finished `release` profile [optimized] target(s) in 7m 27s

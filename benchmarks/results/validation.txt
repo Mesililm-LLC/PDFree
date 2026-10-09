@@ -1,0 +1,75 @@
+    Checking pdf-engine v0.1.0 (D:\Dev\PDFree\crates\pdf-engine)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 16.53s
+   Compiling pdf-engine v0.1.0 (D:\Dev\PDFree\crates\pdf-engine)
+warning: linker stdout: LINK : warning LNK4098: defaultlib 'msvcrt' conflicts with use of other libs; use /NODEFAULTLIB:library
+  |
+  = note: `#[warn(linker_messages)]` on by default
+
+warning: linker stdout: libmupdf.lib(tessocr.obj) : warning LNK4075: ignoring '/EDITANDCONTINUE' due to '/OPT:REF' specification␍
+         LINK : warning LNK4098: defaultlib 'msvcrt' conflicts with use of other libs; use /NODEFAULTLIB:library
+  |
+  = note: `#[warn(linker_messages)]` on by default
+
+warning: `pdfree` (bin "pdfree" test) generated 1 warning
+warning: `pdf-engine` (test "render") generated 1 warning
+warning: `pdf-engine` (lib test) generated 1 warning (1 duplicate)
+warning: `pdf-engine` (example "cancellation_probe") generated 1 warning (1 duplicate)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.11s
+     Running unittests src\lib.rs (target\debug\deps\pdf_engine-59c88b07895484ea.exe)
+
+running 1 test
+test raster::tests::clipped_hidpi_render_matches_the_same_region_of_a_full_page ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests\render.rs (target\debug\deps\render-9cf76e89f507a20e.exe)
+
+running 7 tests
+test encrypted_pdf_reports_password_required_without_attempting_pages ... ok
+test independently_produced_embedded_font_pdf_opens ... ok
+test malformed_documents_report_error_and_next_open_recovers ... ok
+test rapid_open_replacement_only_returns_pixels_for_the_latest_document ... ok
+test thousand_page_open_is_lazy_and_repeated_open_releases_document ... ok
+test real_pdf_renders_clipped_pixels_on_workers ... ok
+test corpus_first_pages_render_without_background_ui_work ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.32s
+
+     Running unittests src\main.rs (target\debug\deps\pdfree-eb1310d8d7441212.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\lib.rs (target\debug\deps\viewer_core-2ad9d98776df58e7.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\contracts.rs (target\debug\deps\contracts-b1bc9062056be47a.exe)
+
+running 8 tests
+test hidpi_tiles_clip_to_page_edges_and_keep_logical_coordinates ... ok
+test eviction_counts_shared_buffers_and_refreshes_recency ... ok
+test invalid_geometry_and_zoom_do_not_create_unbounded_allocations ... ok
+test refining_earlier_page_sizes_preserves_the_reading_anchor ... ok
+test stale_results_cannot_cross_document_or_zoom_changes ... ok
+test mixed_pages_have_one_shared_coordinate_scale ... ok
+test prefetch_cannot_consume_the_request_budget_before_visible_tiles ... ok
+test queue_prioritizes_visible_deduplicates_and_discards_old_generations ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests pdf_engine
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests viewer_core
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

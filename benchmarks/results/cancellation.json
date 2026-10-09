@@ -1,0 +1,108 @@
+{
+  "meaning": "Replacement acknowledgement after vector display-list preparation; worker start is not observed. Active native calls finish. Shutdown joins workers. Not hard native cancellation or UI presentation timing.",
+  "native_store_threshold_mib": 256,
+  "profile": "release",
+  "trials": [
+    {
+      "replacement_ack_ms": 1.9124999999999999,
+      "shutdown_join_ms": 13.921899999999999,
+      "trial": 1
+    },
+    {
+      "replacement_ack_ms": 1.5791,
+      "shutdown_join_ms": 11.1487,
+      "trial": 2
+    },
+    {
+      "replacement_ack_ms": 3.261,
+      "shutdown_join_ms": 14.525,
+      "trial": 3
+    },
+    {
+      "replacement_ack_ms": 1.6027,
+      "shutdown_join_ms": 0.7194,
+      "trial": 4
+    },
+    {
+      "replacement_ack_ms": 10.4349,
+      "shutdown_join_ms": 1.8527,
+      "trial": 5
+    },
+    {
+      "replacement_ack_ms": 1.2374,
+      "shutdown_join_ms": 10.7626,
+      "trial": 6
+    },
+    {
+      "replacement_ack_ms": 10.4552,
+      "shutdown_join_ms": 18.456500000000002,
+      "trial": 7
+    },
+    {
+      "replacement_ack_ms": 6.139399999999999,
+      "shutdown_join_ms": 19.371699999999997,
+      "trial": 8
+    },
+    {
+      "replacement_ack_ms": 1.3177,
+      "shutdown_join_ms": 10.192,
+      "trial": 9
+    },
+    {
+      "replacement_ack_ms": 1.0187,
+      "shutdown_join_ms": 0.3475,
+      "trial": 10
+    },
+    {
+      "replacement_ack_ms": 1.1871,
+      "shutdown_join_ms": 0.5615,
+      "trial": 11
+    },
+    {
+      "replacement_ack_ms": 0.8085,
+      "shutdown_join_ms": 0.3629,
+      "trial": 12
+    },
+    {
+      "replacement_ack_ms": 0.9351,
+      "shutdown_join_ms": 7.4606,
+      "trial": 13
+    },
+    {
+      "replacement_ack_ms": 1.0782,
+      "shutdown_join_ms": 0.30410000000000004,
+      "trial": 14
+    },
+    {
+      "replacement_ack_ms": 0.9869,
+      "shutdown_join_ms": 0.2696,
+      "trial": 15
+    },
+    {
+      "replacement_ack_ms": 0.9128,
+      "shutdown_join_ms": 0.36769999999999997,
+      "trial": 16
+    },
+    {
+      "replacement_ack_ms": 1.1261999999999999,
+      "shutdown_join_ms": 0.29500000000000004,
+      "trial": 17
+    },
+    {
+      "replacement_ack_ms": 0.9904000000000001,
+      "shutdown_join_ms": 0.3357,
+      "trial": 18
+    },
+    {
+      "replacement_ack_ms": 0.8886000000000001,
+      "shutdown_join_ms": 0.2953,
+      "trial": 19
+    },
+    {
+      "replacement_ack_ms": 0.9779000000000001,
+      "shutdown_join_ms": 0.2631,
+      "trial": 20
+    }
+  ],
+  "workers": 4
+}

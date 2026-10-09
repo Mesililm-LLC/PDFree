@@ -1,0 +1,7 @@
+{"data":{"version":"0.1.0"},"elapsed_ms":3.8284000000000002,"event":"process_start"}
+{"data":{},"elapsed_ms":1594.3855,"event":"window_created"}
+{"data":{"available":true},"elapsed_ms":1594.4387,"event":"render_notifier"}
+{"data":{},"elapsed_ms":1595.8108,"event":"window_show_requested"}
+{"data":{"presentation_verified":false},"elapsed_ms":2506.8312,"event":"frame_rendered"}
+{"data":{"cache_bytes":0,"cache_hits":0,"cache_misses":0,"empty_window":true},"elapsed_ms":2690.6654,"event":"benchmark_complete"}
+{"data":{},"elapsed_ms":2691.5971,"event":"event_loop_finished"}

@@ -1,0 +1,8 @@
+/target/
+/.tools/
+/.superpowers/
+/dist/
+/benchmarks/runs/
+/tests/corpus/downloads/
+/*.log
+__pycache__/

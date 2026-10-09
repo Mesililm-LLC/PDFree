@@ -1,0 +1,20 @@
+[package]
+name = "pdfree"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+build = "build.rs"
+
+[dependencies]
+viewer-core = { path = "../viewer-core" }
+pdf-engine = { path = "../pdf-engine" }
+slint = { version = "=1.18.1", default-features = false, features = ["std", "backend-winit", "renderer-femtovg", "renderer-software", "compat-1-2"] }
+rfd = { version = "0.17", default-features = false }
+serde_json = "1"
+png = "0.18"
+
+[features]
+wgpu = ["slint/renderer-femtovg-wgpu"]
+
+[build-dependencies]
+slint-build = "=1.18.1"

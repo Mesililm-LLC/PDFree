@@ -1,0 +1,52 @@
+{
+  "captured_utc": "2026-10-09T11:16:42.2220278Z",
+  "executable_sha256": "A6C20B70F15F2C24A8071D877348E09D6ED411E768A89BF4EBAF5FC08230336A",
+  "document": "tests/corpus/office.pdf",
+  "document_sha256": "1D292405900C46EC9A61433E7CD62501762613EF9C777699A05D3AA23582E70C",
+  "renderer_requested": "winit default (FemtoVG with software fallback)",
+  "machine": {
+    "ram_bytes": 68613902336,
+    "last_boot_utc": "2026-10-08T21:28:48.5000000Z",
+    "cpu": "AMD Ryzen 7 5700X3D 8-Core Processor           ",
+    "logical_processors": 16,
+    "os": "Microsoft Windows 11 Pro",
+    "build": "26200",
+    "gpu": [
+      {
+        "Name": "NVIDIA GeForce RTX 5070",
+        "DriverVersion": "32.0.16.1714"
+      }
+    ]
+  },
+  "limitations": [
+    "First pixels means UI image publication, not verified physical display presentation.",
+    "Frame gaps include idle periods and do not measure scroll frame-time percentiles.",
+    "Peak memory is sampled at 25 ms; raster cache excludes Slint images and native allocations.",
+    "Warm means filesystem/driver caches were not cleared; process initialization is repeated.",
+    "No cold classification without an explicit post-reboot single trial."
+  ],
+  "runs": [
+    {
+      "trial": 1,
+      "mode": "Warm",
+      "cold_trial_id": "",
+      "process_elapsed_ms": 1862.6452,
+      "window_show_request_ms": 1098.7,
+      "first_pixels_from_main_ms": null,
+      "open_to_pixels_ms": null,
+      "peak_working_set_bytes": 69013504,
+      "peak_private_bytes": 85213184,
+      "last_sample_working_set_bytes": 69013504,
+      "sampled_cpu_ms": 484.375,
+      "empty_window": true,
+      "raster_cache_bytes": 0,
+      "cache_hits": 0,
+      "cache_misses": 0,
+      "tile_render_ms": [],
+      "rendered_frame_gaps_ms": [
+        104.66089999999986
+      ],
+      "trace_file": "benchmarks/runs/ab10f9c5-b33d-4143-85a7-ea1d25b4d442/0.jsonl"
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+   Compiling viewer-core v0.1.0 (D:\Dev\PDFree\crates\viewer-core)
+   Compiling pdf-engine v0.1.0 (D:\Dev\PDFree\crates\pdf-engine)
+   Compiling pdfree v0.1.0 (D:\Dev\PDFree\crates\pdfree)
+warning: linker stdout: libmupdf.lib(context.obj) : MSIL .netmodule or module compiled with /GL found; restarting link with /LTCG; add /LTCG to the link command line to improve linker performance␍
+         D:\Dev\PDFree\target\release\build\mupdf-sys-968746cc7afa5899\out\build\source\fitz\error.c(362) : warning C4702: unreachable code␍
+         D:\Dev\PDFree\target\release\build\mupdf-sys-968746cc7afa5899\out\build\source\fitz\brotli.c(136) : warning C4702: unreachable code␍
+         D:\Dev\PDFree\target\release\build\mupdf-sys-968746cc7afa5899\out\build\source\fitz\filter-brotli.c(133) : warning C4702: unreachable code␍
+         D:\Dev\PDFree\target\release\build\mupdf-sys-968746cc7afa5899\out\build\thirdparty\tesseract\src\ccstruct\quadlsq.cpp(133) : warning C4723: potential divide by 0␍
+         D:\Dev\PDFree\target\release\build\mupdf-sys-968746cc7afa5899\out\build\source\fitz\compressed-buffer.c(132) : warning C4702: unreachable code␍
+         D:\Dev\PDFree\target\release\build\mupdf-sys-968746cc7afa5899\out\build\source\fitz\compressed-buffer.c(134) : warning C4702: unreachable code␍
+         D:\Dev\PDFree\target\release\build\mupdf-sys-968746cc7afa5899\out\build\thirdparty\tesseract\src\ccstruct\quadlsq.cpp(133) : warning C4723: potential divide by 0␍
+         D:\Dev\PDFree\target\release\build\mupdf-sys-968746cc7afa5899\out\build\source\pdf\pdf-write.c(961) : warning C4702: unreachable code␍
+         D:\Dev\PDFree\target\release\build\mupdf-sys-968746cc7afa5899\out\build\source\pdf\pdf-write.c(871) : warning C4702: unreachable code␍
+         D:\Dev\PDFree\target\release\build\mupdf-sys-968746cc7afa5899\out\build\source\pdf\pdf-write.c(873) : warning C4702: unreachable code
+  |
+  = note: `#[warn(linker_messages)]` on by default
+
+warning: `pdfree` (bin "pdfree") generated 1 warning
+    Finished `release` profile [optimized] target(s) in 2m 58s

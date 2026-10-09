@@ -1,0 +1,17 @@
+{"data":{"version":"0.1.0"},"elapsed_ms":0.9892,"event":"process_start"}
+{"data":{},"elapsed_ms":27.9558,"event":"window_created"}
+{"data":{"available":false},"elapsed_ms":28.015,"event":"render_notifier"}
+{"data":{},"elapsed_ms":29.2833,"event":"window_show_requested"}
+{"data":{"document":1},"elapsed_ms":29.3222,"event":"document_open_started"}
+{"data":{"engine_ms":9.756,"pages":1},"elapsed_ms":112.1078,"event":"document_parsed"}
+{"data":{"generation":2,"scroll_y":0.0,"zoom":1.0},"elapsed_ms":112.1931,"event":"viewport_changed"}
+{"data":{"duration_ms":19.393400000000003,"page":0},"elapsed_ms":143.9085,"event":"display_list_ready"}
+{"data":{"generation":2,"page":0,"render_ms":860.1837},"elapsed_ms":1015.5654999999999,"event":"tile_available_to_ui"}
+{"data":{"open_to_pixels_ms":986.7055,"presentation_verified":false},"elapsed_ms":1016.0283999999999,"event":"first_page_pixels_published"}
+{"data":{"generation":2,"page":0,"render_ms":948.604},"elapsed_ms":1096.5797,"event":"tile_available_to_ui"}
+{"data":{"error":null,"stage":"first-page","success":true},"elapsed_ms":1770.6808,"event":"snapshot"}
+{"data":{"generation":3,"scroll_y":24.0,"zoom":1.0},"elapsed_ms":1770.7576000000001,"event":"viewport_changed"}
+{"data":{"zoom":1.25},"elapsed_ms":2057.9532,"event":"zoom_input"}
+{"data":{"generation":4,"scroll_y":24.0,"zoom":1.25},"elapsed_ms":2083.1674,"event":"viewport_changed"}
+{"data":{"cache_bytes":2091008,"cache_hits":2,"cache_misses":23,"native_store_limit_mib":256},"elapsed_ms":3287.9456999999998,"event":"benchmark_complete"}
+{"data":{},"elapsed_ms":3288.0298,"event":"event_loop_finished"}

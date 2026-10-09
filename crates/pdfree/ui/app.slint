@@ -1,0 +1,132 @@
+import { Button, LineEdit, ScrollView, Spinner, Palette } from "std-widgets.slint";
+
+export struct PageSurface { x: float, y: float, w: float, h: float, number: int }
+export struct TileSurface { pixels: image, x: float, y: float, w: float, h: float }
+
+export component AppWindow inherits Window {
+    init => { Palette.color-scheme = ColorScheme.light; }
+    title: "PDFree";
+    preferred-width: 1180px;
+    preferred-height: 850px;
+    min-width: 680px;
+    min-height: 480px;
+    background: #f5f7fa;
+    in-out property <string> document-name: "Your documents. Your desktop.";
+    in-out property <string> status: "Open a PDF to get started";
+    in-out property <string> detail: "A fast, offline PDF viewer for Windows";
+    in-out property <bool> ready: false;
+    in-out property <bool> loading: false;
+    in-out property <string> page-entry: "1";
+    in-out property <int> page-count: 0;
+    in-out property <int> zoom-percent: 100;
+    in-out property <float> document-width: 1;
+    in-out property <float> document-height: 1;
+    in-out property <length> scroll-x: 0px;
+    in-out property <length> scroll-y: 0px;
+    out property <float> view-width: viewport.width / 1px;
+    out property <float> view-height: viewport.height / 1px;
+    in property <[PageSurface]> pages;
+    in property <[TileSurface]> previews;
+    in property <[TileSurface]> tiles;
+    callback action(string);
+    callback navigate(string);
+
+    forward-focus: keys;
+    keys := FocusScope {
+        key-pressed(event) => {
+            if event.modifiers.control {
+                if event.text == "o" || event.text == "O" { root.action("open"); return accept; }
+                if event.text == "+" || event.text == "=" { root.action("zoom-in"); return accept; }
+                if event.text == "-" { root.action("zoom-out"); return accept; }
+                if event.text == "0" { root.action("fit-width"); return accept; }
+            }
+            if event.text == Key.PageDown { root.action("next"); return accept; }
+            if event.text == Key.PageUp { root.action("previous"); return accept; }
+            if event.text == Key.DownArrow { root.action("down"); return accept; }
+            if event.text == Key.UpArrow { root.action("up"); return accept; }
+            if event.text == Key.Home { root.action("first"); return accept; }
+            if event.text == Key.End { root.action("last"); return accept; }
+            return reject;
+        }
+        VerticalLayout {
+            spacing: 0px;
+            Rectangle {
+                height: 64px;
+                background: #ffffff;
+                HorizontalLayout {
+                    padding: 16px;
+                    spacing: 14px;
+                    Text { text: "PDFree"; color: #146bca; font-size: 23px; font-weight: 700; }
+                    Rectangle { width: 1px; background: #e3e8ef; }
+                    Text { text: root.document-name; color: #526171; overflow: elide; horizontal-stretch: 1; vertical-alignment: center; }
+                    Button { text: "Open PDF"; clicked => { root.action("open"); } }
+                }
+            }
+            Rectangle { height: 1px; background: #e3e8ef; }
+            Rectangle {
+                height: 52px;
+                background: #fafbfd;
+                HorizontalLayout {
+                    padding-left: 16px; padding-right: 16px; padding-top: 8px; padding-bottom: 8px;
+                    spacing: 8px;
+                    Button { text: "‹"; enabled: root.ready; clicked => { root.action("previous"); } }
+                    LineEdit { width: 54px; enabled: root.ready; text <=> root.page-entry; accepted => { root.navigate(self.text); } }
+                    Text { text: "/ " + root.page-count; color: #526171; vertical-alignment: center; }
+                    Button { text: "›"; enabled: root.ready; clicked => { root.action("next"); } }
+                    Rectangle { horizontal-stretch: 1; }
+                    Button { text: "−"; enabled: root.ready; clicked => { root.action("zoom-out"); } }
+                    Text { text: root.zoom-percent + "%"; width: 54px; horizontal-alignment: center; vertical-alignment: center; color: #344454; }
+                    Button { text: "+"; enabled: root.ready; clicked => { root.action("zoom-in"); } }
+                    Button { text: "Fit width"; enabled: root.ready; clicked => { root.action("fit-width"); } }
+                    Button { text: "Fit page"; enabled: root.ready; clicked => { root.action("fit-page"); } }
+                }
+            }
+            viewport := Rectangle {
+                background: #e6ebf1;
+                vertical-stretch: 1;
+                if root.ready: ScrollView {
+                    content-width: root.document-width * 1px;
+                    content-height: root.document-height * 1px;
+                    content-x <=> root.scroll-x;
+                    content-y <=> root.scroll-y;
+                    for page in root.pages: Rectangle {
+                        x: page.x * 1px; y: page.y * 1px;
+                        width: page.w * 1px; height: page.h * 1px;
+                        background: white;
+                        Text { text: "Loading page " + page.number; color: #9ba7b3; horizontal-alignment: center; vertical-alignment: center; }
+                    }
+                    for tile in root.previews: Image {
+                        x: tile.x * 1px; y: tile.y * 1px;
+                        width: tile.w * 1px; height: tile.h * 1px;
+                        source: tile.pixels;
+                        image-fit: fill;
+                    }
+                    for tile in root.tiles: Image {
+                        x: tile.x * 1px; y: tile.y * 1px;
+                        width: tile.w * 1px; height: tile.h * 1px;
+                        source: tile.pixels;
+                        image-fit: fill;
+                    }
+                }
+                if !root.ready: VerticalLayout {
+                    alignment: center;
+                    spacing: 16px;
+                    padding-left: 70px; padding-right: 70px;
+                    if root.loading: Spinner { width: 36px; height: 36px; }
+                    Text { text: root.status; color: #223b54; font-size: 25px; font-weight: 600; horizontal-alignment: center; wrap: word-wrap; }
+                    Text { text: root.detail; color: #667b8d; font-size: 15px; horizontal-alignment: center; wrap: word-wrap; }
+                    Button { text: "Choose a PDF"; clicked => { root.action("open"); } }
+                }
+            }
+            Rectangle {
+                height: 32px;
+                background: #ffffff;
+                HorizontalLayout {
+                    padding-left: 16px; padding-right: 16px;
+                    Text { text: root.ready ? root.status : "Offline • Viewer prototype"; color: #607386; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1; }
+                    Text { text: "Ctrl+O  Open    Ctrl +/−  Zoom    PgUp/PgDn  Navigate"; color: #7d8b99; font-size: 11px; vertical-alignment: center; }
+                }
+            }
+        }
+    }
+}
