@@ -24,14 +24,16 @@ fn changed(e: &Engine, revision: u64, operation: u64, command: EditCommand) -> u
         event => panic!("native edit failed: {event:?}"),
     }
 }
+static FOLDER_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 fn folder() -> PathBuf {
     let path = std::env::temp_dir().join(format!(
-        "pdfree-pages-{}-{}",
+        "pdfree-pages-{}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
-            .as_nanos()
+            .as_nanos(),
+        FOLDER_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     std::fs::create_dir(&path).unwrap();
     path
@@ -208,6 +210,14 @@ fn imports_annotation_deletion_stale_guards_and_split_conflicts_are_transactiona
     })
     .unwrap();
     a.update().unwrap();
+    a.object()
+        .dict_put(
+            "A",
+            foreign
+                .new_object_from_str("<< /S /JavaScript /JS (blocked) >>")
+                .unwrap(),
+        )
+        .unwrap();
     drop(a);
     drop(page);
     foreign.save(unsupported.to_str().unwrap()).unwrap();
@@ -310,15 +320,7 @@ fn native_journal_save_as_rename_and_undo_preserve_encryption() {
 }
 #[test]
 fn coordinator_native_edits_history_save_and_exports() {
-    let folder = std::env::temp_dir().join(format!(
-        "pdfree-pages-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir(&folder).unwrap();
+    let folder = folder();
     let source = folder.join("source.pdf");
     std::fs::copy(fixture("text.pdf"), &source).unwrap();
     let original = std::fs::read(&source).unwrap();
@@ -453,4 +455,189 @@ fn coordinator_native_edits_history_save_and_exports() {
     ));
     drop(e);
     cleanup(folder);
+}
+#[test]
+fn imports_links_popup_appearance_and_namespaced_form_tree() {
+    let dir = folder();
+    let source = dir.join("source.pdf");
+    std::fs::copy(fixture("text.pdf"), &source).unwrap();
+    let engine = Engine::spawn(1);
+    engine.open(1, 1, source);
+    wait(&engine, |event| matches!(event, Event::Opened { .. }));
+    let revision = changed(
+        &engine,
+        0,
+        1,
+        EditCommand::Insert {
+            paths: vec![fixture("interactive-merge.pdf")],
+            at: 1,
+        },
+    );
+    let output = dir.join("interactive-merged.pdf");
+    assert!(engine.save_as(1, 2, output.clone(), vec![]));
+    assert!(matches!(
+        wait(&engine, |event| matches!(
+            event,
+            Event::FileDone { operation: 2, .. } | Event::FileError { operation: 2, .. }
+        )),
+        Event::FileDone { .. }
+    ));
+    let pdf = mupdf::pdf::PdfDocument::open(output.to_str().unwrap()).unwrap();
+    assert_eq!(pdf.page_count().unwrap(), 3);
+    let page = pdf.find_page(1).unwrap();
+    let annots = page.get_dict("Annots").unwrap().unwrap();
+    assert_eq!(annots.len().unwrap(), 7);
+    let internal = annots.get_array(1).unwrap().unwrap();
+    let dest = internal.get_dict("Dest").unwrap().unwrap();
+    assert_eq!(
+        pdf.lookup_page_number(&dest.get_array(0).unwrap().unwrap())
+            .unwrap(),
+        2
+    );
+    let named = annots
+        .get_array(6)
+        .unwrap()
+        .unwrap()
+        .get_dict("A")
+        .unwrap()
+        .unwrap()
+        .get_dict("D")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        pdf.lookup_page_number(&named.get_array(0).unwrap().unwrap())
+            .unwrap(),
+        2
+    );
+    let note = annots.get_array(2).unwrap().unwrap();
+    let popup = annots.get_array(3).unwrap().unwrap();
+    assert_eq!(
+        note.get_dict("Popup")
+            .unwrap()
+            .unwrap()
+            .as_indirect()
+            .unwrap(),
+        popup.as_indirect().unwrap()
+    );
+    assert_eq!(
+        popup
+            .get_dict("Parent")
+            .unwrap()
+            .unwrap()
+            .as_indirect()
+            .unwrap(),
+        note.as_indirect().unwrap()
+    );
+    let square = annots.get_array(4).unwrap().unwrap();
+    let appearance = square
+        .get_dict("AP")
+        .unwrap()
+        .unwrap()
+        .get_dict("N")
+        .unwrap()
+        .unwrap();
+    assert!(appearance.read_stream().unwrap().starts_with(b"q 1 0 0 RG"));
+    assert_eq!(
+        appearance
+            .get_dict("Resources")
+            .unwrap()
+            .unwrap()
+            .get_dict("Font")
+            .unwrap()
+            .unwrap()
+            .get_dict("A")
+            .unwrap()
+            .unwrap()
+            .get_dict("BaseFont")
+            .unwrap()
+            .unwrap()
+            .as_name()
+            .unwrap(),
+        b"Helvetica"
+    );
+    assert_eq!(
+        appearance.as_indirect().unwrap(),
+        square
+            .get_dict("AP")
+            .unwrap()
+            .unwrap()
+            .get_dict("R")
+            .unwrap()
+            .unwrap()
+            .as_indirect()
+            .unwrap()
+    );
+    let widget = annots.get_array(5).unwrap().unwrap();
+    assert_eq!(
+        pdf.lookup_page_number(&widget.get_dict("P").unwrap().unwrap())
+            .unwrap(),
+        1
+    );
+    let root = pdf.trailer().unwrap().get_dict("Root").unwrap().unwrap();
+    let form = root.get_dict("AcroForm").unwrap().unwrap();
+    let parent = form
+        .get_dict("Fields")
+        .unwrap()
+        .unwrap()
+        .get_array(0)
+        .unwrap()
+        .unwrap();
+    assert!(
+        parent
+            .get_dict("T")
+            .unwrap()
+            .unwrap()
+            .as_string()
+            .unwrap()
+            .starts_with("PDFree_import_")
+    );
+    assert_eq!(
+        parent
+            .get_dict("Kids")
+            .unwrap()
+            .unwrap()
+            .get_array(0)
+            .unwrap()
+            .unwrap()
+            .as_indirect()
+            .unwrap(),
+        widget.as_indirect().unwrap()
+    );
+    assert_eq!(
+        widget.get_dict("V").unwrap().unwrap().as_string().unwrap(),
+        "Preserved café"
+    );
+    assert!(
+        form.get_dict("DR")
+            .unwrap()
+            .unwrap()
+            .get_dict("Font")
+            .unwrap()
+            .unwrap()
+            .get_dict("Helv")
+            .unwrap()
+            .is_some()
+    );
+    drop(pdf);
+    // A second form with conflicting global font resource names fails atomically.
+    assert!(engine.edit(
+        1,
+        revision,
+        3,
+        103,
+        EditCommand::Insert {
+            paths: vec![fixture("interactive-merge.pdf")],
+            at: 0,
+        }
+    ));
+    assert!(matches!(
+        wait(&engine, |event| matches!(
+            event,
+            Event::Changed { operation: 3, .. } | Event::FileError { operation: 3, .. }
+        )),
+        Event::FileError { .. }
+    ));
+    changed(&engine, revision, 4, EditCommand::Undo);
+    drop(engine);
+    cleanup(dir);
 }

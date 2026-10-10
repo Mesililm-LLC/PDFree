@@ -20,15 +20,15 @@ Statuses describe application behavior, not everything MuPDF could support.
 | PDFium fallback | Unsupported in prototype | Documented alternative; adapter not built |
 | Thumbnails | Implemented | Lazy sidebar, at most 32 nearby rows; existing render workers |
 | Text search | Implemented | Case-insensitive native search, highlights and next/previous; 10,000-match limit |
-| Mouse selection / Ctrl+C | Implemented | Single page, multiline Unicode text; respects COPY permission; no OCR |
-| Single/facing views, outlines, links | Unsupported in prototype | Viewer foundation backlog |
+| Mouse selection / Ctrl+C | Implemented | Cross-page multiline Unicode text, up to 16 pages; edge autoscroll; respects COPY; no OCR |
+| Single/facing views, outlines, links | Implemented, experimental | Indexed mixed-size layouts; bounded outlines/links; internal jumps and explicit HTTP/HTTPS clicks; unsupported actions reported |
 | Highlights / sticky notes | Implemented, experimental | Native Text/Highlight edits and deletion; locked or truncated previews read-only |
 | Undo / redo | Implemented | Shared annotation/page history, 200 commands / 128 MiB; filename changes and exports are separate |
 | Save As | Implemented, experimental | New file only; opens the copy, leaves previous source unchanged; preserves encryption |
 | Inline filename rename and save | Implemented | Enter commits current annotations and filename; another file is never replaced; undo history retained |
 | Direct Save / Ctrl+S | Implemented, experimental | Verified sibling staging and Windows replacement with recovery backup |
 | Rotate / move / delete / blank page | Implemented, experimental | Shared undo; must retain one page; ASSEMBLE permission |
-| Insert / merge | Partial | Up to 16 unpassworded PDFs; only Text/Highlight annotations supported; unsupported imports rejected |
+| Insert / merge | Partial | Up to 16 unpassworded PDFs; supported links/destinations, popup/annotation graphs and AcroForm fields preserved; incompatible forms/actions rejected |
 | Extract / split | Implemented, experimental | New files only; COPY and ASSEMBLE; bookmarks removed; not secure redaction |
 | Forms / existing content editing | Unsupported in prototype | Separate editing milestone |
 | Redaction, OCR, compression, conversion | Unsupported in prototype | Separate acceptance gates |

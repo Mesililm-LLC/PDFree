@@ -1,10 +1,11 @@
-import { Button, LineEdit, TextEdit, ScrollView, Spinner, Palette } from "std-widgets.slint";
+import { Button, LineEdit, TextEdit, ScrollView, Spinner, Palette, ComboBox } from "std-widgets.slint";
 
 export struct PageSurface { x: float, y: float, w: float, h: float, number: int }
 export struct TileSurface { pixels: image, x: float, y: float, w: float, h: float }
 export struct OverlaySurface { x: float, y: float, w: float, h: float, selected: bool }
 export struct ThumbnailSurface { number: int, pixels: image }
 export struct AnnotationSurface { x: float, y: float, w: float, h: float, kind: int, label: string, index: int }
+export struct BookmarkItem { index: int, title: string }
 export struct AnnotationItem { index: int, label: string, editable: bool }
 
 export component AppWindow inherits Window {
@@ -45,10 +46,15 @@ export component AppWindow inherits Window {
     in-out property <bool> pending-open: false;
     in-out property <bool> pending-close: false;
     in-out property <string> selection-text;
+    in-out property <bool> selection-single-page: false;
     in-out property <bool> search-visible: false;
     in-out property <string> search-query;
     in-out property <string> search-status;
     in-out property <bool> sidebar-visible: false;
+    in-out property <bool> bookmarks-visible: false;
+    in-out property <int> reading-mode: 0;
+    in-out property <string> bookmark-status;
+    in property <[BookmarkItem]> bookmarks;
     in-out property <length> thumbnail-scroll: 0px;
     out property <float> thumbnail-height: thumbnail-panel.height / 1px;
     in-out property <string> page-entry: "1";
@@ -67,11 +73,18 @@ export component AppWindow inherits Window {
     in property <[ThumbnailSurface]> thumbnails;
     in property <[AnnotationSurface]> annotations;
     in property <[AnnotationItem]> annotation-items;
+    callback bookmark-click(int);
+    callback page-link(int,float,float);
+    callback hover-link(int,float,float);
+    in-out property <bool> link-hover: false;
     callback action(string);
     callback navigate(string);
     callback password-submit(string);
     callback search(string);
     callback select-text(int, float, float, int);
+    callback reader-pointer(float,float,int);
+    callback reader-click(float,float);
+    callback reader-hover(float,float);
     callback thumbnail-click(int);
     callback rename-submit(string);
     callback note-submit(string);
@@ -140,7 +153,7 @@ export component AppWindow inherits Window {
                     Text { text: "PDFree"; color: #146bca; font-size: 23px; font-weight: 700; }
                     Rectangle { width: 1px; background: #e3e8ef; }
                     Rectangle {
-                        horizontal-stretch: 1;
+                        horizontal-stretch: 1; min-width: 0px;
                         if !root.rename-active: Text { width: 100%; height: 100%; text: root.document-name; color: #526171; overflow: elide; vertical-alignment: center; }
                         if !root.rename-active: TouchArea { enabled: root.ready && !root.file-busy; double-clicked => { root.action("rename-start"); } }
                         rename-edit := LineEdit {
@@ -152,9 +165,10 @@ export component AppWindow inherits Window {
                         }
                     }
                     Text { visible: root.dirty-document; text: "Unsaved"; color: #a16305; vertical-alignment: center; font-size: 12px; }
+                    Button { text: "Bookmarks"; enabled: root.ready; clicked => { root.action("bookmarks"); } }
                     Button { text: "Pages"; enabled: root.ready; clicked => { root.action("thumbnails"); } }
                     Button { text: "Find"; enabled: root.ready; clicked => { root.action("find"); } }
-                    Button { text: "Copy selection"; enabled: root.can-copy && root.selection-text != ""; clicked => { root.copy-selection(); } }
+                    Button { visible: root.width >= 900px; text: "Copy selection"; enabled: root.can-copy && root.selection-text != ""; clicked => { root.copy-selection(); } }
                     Button { text: "Open PDF"; enabled: !root.file-busy && !root.rename-active; clicked => { root.action("open"); } }
                 }
             }
@@ -164,11 +178,14 @@ export component AppWindow inherits Window {
                 background: white;
                 HorizontalLayout {
                     padding-left: 16px; padding-right: 16px; padding-top: 5px; padding-bottom: 5px; spacing: 8px;
-                    Button { text: "Highlight"; enabled: root.can-annotate && root.selection-text != "" && !root.file-busy; clicked => { root.action("annotate-highlight"); } }
+                    Button { text: "Highlight"; enabled: root.can-annotate && root.selection-single-page && root.selection-text != "" && !root.file-busy; clicked => { root.action("annotate-highlight"); } }
                     Button { text: root.note-placement ? "Cancel note" : "Add note"; enabled: root.can-annotate && !root.file-busy; clicked => { if root.note-placement { root.action("cancel-note"); } else { root.action("annotate-note"); } } }
                     Button { text: "Undo"; enabled: root.can-undo && !root.file-busy; clicked => { root.action("undo"); } }
                     Button { text: "Redo"; enabled: root.can-redo && !root.file-busy; clicked => { root.action("redo"); } }
                     Rectangle { horizontal-stretch: 1; }
+                    ComboBox { width: 150px; model: ["Continuous", "Single page", "Facing pages"]; current-index <=> root.reading-mode; enabled: root.ready;
+                        selected(index) => { root.action(index == 1 ? "view-single" : index == 2 ? "view-facing" : "view-continuous"); }
+                    }
                     Text { visible: root.note-placement; text: "Click a page to place your note"; color: #526171; vertical-alignment: center; font-size: 12px; }
                 }
             }
@@ -234,6 +251,23 @@ export component AppWindow inherits Window {
             HorizontalLayout {
                 spacing: 0px;
                 vertical-stretch: 1;
+                if root.bookmarks-visible && root.ready: Rectangle {
+                    width: 230px; background: #f4f6f9;
+                    VerticalLayout {
+                        padding: 8px;
+                        Text { text: "Bookmarks"; font-weight: 700; color: #344454; }
+                        Text { text: root.bookmark-status; color: #607386; wrap: word-wrap; }
+                        ScrollView {
+                            VerticalLayout {
+                                for bookmark in root.bookmarks: Rectangle {
+                                    height: 36px; background: white;
+                                    Text { text: bookmark.title; width: 100%; height: 100%; overflow: elide; vertical-alignment: center; color: #344454; }
+                                    TouchArea { mouse-cursor: pointer; clicked => {root.bookmark-click(bookmark.index);root.focus-document();} }
+                                }
+                            }
+                        }
+                    }
+                }
                 thumbnail-panel := Rectangle {
                     width: root.sidebar-visible && root.ready ? 180px : 0px;
                     visible: root.sidebar-visible && root.ready;
@@ -291,24 +325,29 @@ export component AppWindow inherits Window {
                         width: overlay.w * 1px; height: overlay.h * 1px;
                         background: overlay.selected ? #3a8de65c : #f5cc316b;
                     }
-                    for page in root.pages: TouchArea {
-                        x: page.x * 1px; y: page.y * 1px;
-                        width: page.w * 1px; height: page.h * 1px;
-                        enabled: root.can-copy || root.note-placement;
-                        mouse-cursor: root.note-placement ? crosshair : text;
+                    TouchArea {
+                        width: root.document-width * 1px; height: root.document-height * 1px;
+                        property <float> start-x;
+                        property <float> start-y;
+                        property <bool> dragged: false;
+                        clicked => { if !self.dragged && !root.note-placement { root.reader-click(self.mouse-x / 1px,self.mouse-y / 1px); } }
+                        mouse-cursor: root.note-placement ? crosshair : root.link-hover ? pointer : text;
                         pointer-event(event) => {
+                            if event.kind == PointerEventKind.cancel { root.reader-pointer(0,0,3); }
                             if event.button == PointerEventButton.left {
                                 if event.kind == PointerEventKind.down {
+                                    self.start-x=self.mouse-x / 1px; self.start-y=self.mouse-y / 1px; self.dragged=false;
                                     root.focus-document();
-                                    if root.note-placement { root.page-point(page.number - 1, self.mouse-x / 1px, self.mouse-y / 1px); }
-                                    else { root.select-text(page.number - 1, self.mouse-x / 1px, self.mouse-y / 1px, 0); }
-                                } else if event.kind == PointerEventKind.up && !root.note-placement && !root.note-visible {
-                                    root.select-text(page.number - 1, self.mouse-x / 1px, self.mouse-y / 1px, 2);
+                                    root.reader-pointer(self.mouse-x / 1px,self.mouse-y / 1px,0);
+                                } else if event.kind == PointerEventKind.up {
+                                    root.reader-pointer(self.mouse-x / 1px,self.mouse-y / 1px,2);
                                 }
                             }
                         }
                         moved => {
-                            if self.pressed && !root.note-placement && !root.note-visible { root.select-text(page.number - 1, self.mouse-x / 1px, self.mouse-y / 1px, 1); }
+                            root.reader-hover(self.mouse-x / 1px,self.mouse-y / 1px);
+                            if self.pressed && (abs(self.mouse-x / 1px - self.start-x)>4 || abs(self.mouse-y / 1px - self.start-y)>4) { self.dragged=true; }
+                            if self.pressed && !root.note-placement && !root.note-visible { root.reader-pointer(self.mouse-x / 1px,self.mouse-y / 1px,1); }
                         }
                     }
                     for annotation in root.annotations: Rectangle {

@@ -1,0 +1,228 @@
+%PDF-1.3
+%‚„œ”
+1 0 obj
+<<
+/Producer (pypdf)
+>>
+endobj
+2 0 obj
+<<
+/Type /Pages
+/Count 3
+/Kids [ 5 0 R 7 0 R 9 0 R ]
+>>
+endobj
+3 0 obj
+<<
+/Type /Catalog
+/Pages 2 0 R
+/Outlines 13 0 R
+>>
+endobj
+4 0 obj
+<<
+/Type /Font
+/Subtype /Type1
+/BaseFont /Helvetica
+>>
+endobj
+5 0 obj
+<<
+/Type /Page
+/Resources <<
+/Font <<
+/F1 4 0 R
+>>
+>>
+/MediaBox [ 0.0 0.0 612 792 ]
+/Parent 2 0 R
+/Contents 6 0 R
+/Annots [ 18 0 R 19 0 R 20 0 R ]
+>>
+endobj
+6 0 obj
+<<
+/Length 55
+>>
+stream
+BT /F1 18 Tf 60 700 Td (PDFree navigation page 1) Tj ET
+endstream
+endobj
+7 0 obj
+<<
+/Type /Page
+/Resources <<
+/Font <<
+/F1 4 0 R
+>>
+>>
+/MediaBox [ 0.0 0.0 612 792 ]
+/Parent 2 0 R
+/Contents 8 0 R
+/CropBox [ 40 20 572 772 ]
+/Annots [ 21 0 R ]
+>>
+endobj
+8 0 obj
+<<
+/Length 55
+>>
+stream
+BT /F1 18 Tf 60 700 Td (PDFree navigation page 2) Tj ET
+endstream
+endobj
+9 0 obj
+<<
+/Type /Page
+/Resources <<
+/Font <<
+/F1 4 0 R
+>>
+>>
+/MediaBox [ 0.0 0.0 612 792 ]
+/Parent 2 0 R
+/Contents 10 0 R
+>>
+endobj
+10 0 obj
+<<
+/Length 55
+>>
+stream
+BT /F1 18 Tf 60 700 Td (PDFree navigation page 3) Tj ET
+endstream
+endobj
+11 0 obj
+<<
+/D [ 5 0 R /Fit ]
+/S /GoTo
+>>
+endobj
+12 0 obj
+<<
+/A 11 0 R
+/Title (First chapter)
+/Parent 13 0 R
+/Count 1
+/First 15 0 R
+/Last 15 0 R
+/Next 17 0 R
+>>
+endobj
+13 0 obj
+<<
+/First 12 0 R
+/Count 3
+/Last 17 0 R
+>>
+endobj
+14 0 obj
+<<
+/D [ 7 0 R /Fit ]
+/S /GoTo
+>>
+endobj
+15 0 obj
+<<
+/A 14 0 R
+/Title (Second page)
+/Parent 12 0 R
+/Count 0
+>>
+endobj
+16 0 obj
+<<
+/D [ 9 0 R /Fit ]
+/S /GoTo
+>>
+endobj
+17 0 obj
+<<
+/A 16 0 R
+/Title (Third page)
+/Prev 12 0 R
+/Parent 13 0 R
+/Count 0
+>>
+endobj
+18 0 obj
+<<
+/Type /Annot
+/Subtype /Link
+/Rect [ 50 600 200 640 ]
+/Border [ 0 0 0 ]
+/Dest [ 1 /Fit ]
+/P 5 0 R
+>>
+endobj
+19 0 obj
+<<
+/Type /Annot
+/Subtype /Link
+/Rect [ 50 500 200 540 ]
+/Border [ 0 0 0 ]
+/A <<
+/S /URI
+/Type /Action
+/URI (https\072\057\057example\056org\057pdfree)
+>>
+/P 5 0 R
+>>
+endobj
+20 0 obj
+<<
+/Type /Annot
+/Subtype /Link
+/Rect [ 50 400 200 440 ]
+/Border [ 0 0 0 ]
+/A <<
+/S /URI
+/Type /Action
+/URI (file\072\057\057\057C\072\057unsafe\056pdf)
+>>
+/P 5 0 R
+>>
+endobj
+21 0 obj
+<<
+/Type /Annot
+/Subtype /Link
+/Rect [ 50 600 200 640 ]
+/Border [ 0 0 0 ]
+/Dest [ 2 /Fit ]
+/P 7 0 R
+>>
+endobj
+xref
+0 22
+0000000000 65535 f 
+0000000015 00000 n 
+0000000054 00000 n 
+0000000125 00000 n 
+0000000191 00000 n 
+0000000261 00000 n 
+0000000426 00000 n 
+0000000531 00000 n 
+0000000709 00000 n 
+0000000814 00000 n 
+0000000947 00000 n 
+0000001053 00000 n 
+0000001102 00000 n 
+0000001221 00000 n 
+0000001279 00000 n 
+0000001328 00000 n 
+0000001405 00000 n 
+0000001454 00000 n 
+0000001543 00000 n 
+0000001662 00000 n 
+0000001844 00000 n 
+0000002027 00000 n 
+trailer
+<<
+/Size 22
+/Root 3 0 R
+/Info 1 0 R
+>>
+startxref
+2146
+%%EOF

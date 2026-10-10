@@ -6,7 +6,7 @@ use std::{
     path::PathBuf,
     time::{Duration, Instant},
 };
-use viewer_core::{Layout, PageSize, TileCache, TileKey, Viewport, clamp_zoom};
+use viewer_core::{Layout, PageSize, ReadingMode, TileCache, TileKey, Viewport, clamp_zoom};
 
 #[cfg(test)]
 #[path = "reader_tests.rs"]
@@ -17,13 +17,13 @@ mod editing;
 pub use editing::ToolDialog;
 
 pub struct State {
-    engine: Engine,
+    pub(crate) engine: Engine,
     trace: Trace,
-    document: u64,
+    pub(crate) document: u64,
     generation: u64,
     sizes: Vec<PageSize>,
-    layout: Layout,
-    zoom: f32,
+    pub(crate) layout: Layout,
+    pub(crate) zoom: f32,
     cache: TileCache,
     images: HashMap<TileKey, slint::Image>,
     previews: HashMap<TileKey, slint::Image>,
@@ -32,15 +32,19 @@ pub struct State {
     first_tile: bool,
     first_pixels_at: Instant,
     current_page: usize,
+    reading_page: usize,
+    mode: ReadingMode,
+    pointer: Option<(usize, f32, f32)>,
+    pub(crate) navigation: crate::navigation::Navigation,
     open_started: Instant,
     zoom_started: Instant,
     render_error: Option<String>,
     benchmark: bool,
     benchmark_stage: u8,
     pub dialog_open: bool,
-    tools: crate::features::ReaderTools,
+    pub(crate) tools: crate::features::ReaderTools,
     path: Option<PathBuf>,
-    editor: editing::Editor,
+    pub(crate) editor: editing::Editor,
 }
 
 impl State {
@@ -66,6 +70,10 @@ impl State {
             first_tile: false,
             first_pixels_at: Instant::now(),
             current_page: usize::MAX,
+            reading_page: 0,
+            mode: ReadingMode::Continuous,
+            pointer: None,
+            navigation: Default::default(),
             open_started: Instant::now(),
             zoom_started: Instant::now(),
             render_error: None,
@@ -85,6 +93,9 @@ impl State {
     fn open_password(&mut self, ui: &AppWindow, path: PathBuf, password: Option<String>) {
         self.reset_editor(ui);
         self.tools.reset(ui);
+        self.navigation.reset(ui);
+        self.reading_page = 0;
+        self.pointer = None;
         self.path = Some(path.clone());
         self.document += 1;
         self.generation += 1;
@@ -138,16 +149,116 @@ impl State {
         self.tools.overlays(ui, &self.layout, self.zoom);
     }
 
+    pub fn reader_position(&self, x: f32, y: f32, nearest: bool) -> Option<(usize, f32, f32)> {
+        if !x.is_finite() || !y.is_finite() {
+            return None;
+        }
+        let (page, rect) = self
+            .layout
+            .pages
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| r.width > 0.)
+            .min_by(|(_, a), (_, b)| {
+                let d = |r: &viewer_core::PageRect| {
+                    (r.x - x).max(0.).max(x - r.x - r.width).powi(2)
+                        + (r.y - y).max(0.).max(y - r.y - r.height).powi(2)
+                };
+                d(a).total_cmp(&d(b))
+            })?;
+        if !nearest
+            && (x < rect.x || x > rect.x + rect.width || y < rect.y || y > rect.y + rect.height)
+        {
+            return None;
+        }
+        Some((page, x - rect.x, y - rect.y))
+    }
+    pub fn reader_pointer(&mut self, ui: &AppWindow, x: f32, y: f32, phase: i32) {
+        if phase == 3 {
+            self.pointer = None;
+            return;
+        }
+        if phase != 0 && self.pointer.is_none() {
+            return;
+        }
+        if phase == 0 || phase == 2 {
+            self.pointer = None;
+        }
+        if let Some((page, x, y)) = self.reader_position(x, y, phase != 0) {
+            if ui.get_note_placement() && phase == 0 {
+                self.page_point(ui, page, x, y);
+            } else if !ui.get_note_visible() && !ui.get_note_placement() {
+                self.select_text(ui, page, x, y, phase);
+            }
+        } else if phase == 0 {
+            self.tools.clear_selection(ui);
+            self.tools.overlays(ui, &self.layout, self.zoom);
+        }
+    }
+    pub fn reader_click(&mut self, ui: &AppWindow, x: f32, y: f32) {
+        if let Some((page, x, y)) = self.reader_position(x, y, false) {
+            self.activate_link(ui, page, x, y);
+        }
+    }
+    pub fn reader_hover(&self, ui: &AppWindow, x: f32, y: f32) {
+        if let Some((page, x, y)) = self.reader_position(x, y, false) {
+            self.hover_link(ui, page, x, y);
+        } else {
+            ui.set_link_hover(false);
+        }
+    }
     pub fn select_text(&mut self, ui: &AppWindow, page: usize, x: f32, y: f32, phase: i32) {
-        self.tools.select(ui, page, x, y, phase, self.zoom);
+        if !ui.get_can_copy() {
+            self.pointer = None;
+            return;
+        }
+        let Some(rect) = self.layout.pages.get(page).copied() else {
+            return;
+        };
+        let doc_x = rect.x + x;
+        let doc_y = rect.y + y;
+        let target = self
+            .layout
+            .pages
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| r.width > 0.)
+            .min_by(|(_, a), (_, b)| {
+                let distance = |r: &viewer_core::PageRect| {
+                    (r.x - doc_x).max(0.).max(doc_x - r.x - r.width).powi(2)
+                        + (r.y - doc_y).max(0.).max(doc_y - r.y - r.height).powi(2)
+                };
+                distance(a).total_cmp(&distance(b))
+            })
+            .map(|(i, _)| i)
+            .unwrap_or(page);
+        let end = self.layout.pages[target];
+        self.pointer = if phase == 2 { None } else { Some((page, x, y)) };
+        self.tools
+            .select(ui, target, doc_x - end.x, doc_y - end.y, phase, self.zoom);
         self.tools.overlays(ui, &self.layout, self.zoom);
+        self.dirty = true;
     }
 
     pub fn navigate(&mut self, ui: &AppWindow, page: usize) {
+        self.pointer = None;
         if self.sizes.is_empty() {
             return;
         }
         let page = page.min(self.sizes.len() - 1);
+        self.reading_page = page;
+        if self.mode != ReadingMode::Continuous {
+            self.layout = Layout::with_mode(
+                &self.sizes,
+                self.zoom,
+                (ui.get_view_width() - 14.).max(1.),
+                self.mode,
+                page,
+            );
+            ui.set_document_height(self.layout.height);
+            ui.set_document_width(self.layout.width);
+            self.dirty = true;
+        }
         ui.set_page_entry((page + 1).to_string().into());
         ui.set_scroll_y(
             -self.layout.pages[page]
@@ -157,6 +268,7 @@ impl State {
     }
 
     pub fn action(&mut self, ui: &AppWindow, action: &str) {
+        self.pointer = None;
         if ui.get_pending_open() && !action.starts_with("pending-") {
             return;
         }
@@ -175,8 +287,32 @@ impl State {
                 ui.set_detail("Password entry cancelled.".into());
                 return;
             }
+            "view-continuous" | "view-single" | "view-facing" => {
+                self.reading_page = self.current_page.min(self.sizes.len().saturating_sub(1));
+                self.mode = match action {
+                    "view-single" => ReadingMode::Single,
+                    "view-facing" => ReadingMode::Facing,
+                    _ => ReadingMode::Continuous,
+                };
+                ui.set_reading_mode(match self.mode {
+                    ReadingMode::Continuous => 0,
+                    ReadingMode::Single => 1,
+                    ReadingMode::Facing => 2,
+                });
+                self.tools.clear_selection(ui);
+                self.pointer = None;
+                self.navigate(ui, self.reading_page);
+                self.dirty = true;
+                return;
+            }
+            "bookmarks" => {
+                ui.set_bookmarks_visible(!ui.get_bookmarks_visible());
+                ui.set_sidebar_visible(false);
+                return;
+            }
             "thumbnails" => {
                 ui.set_sidebar_visible(!ui.get_sidebar_visible());
+                ui.set_bookmarks_visible(false);
                 return;
             }
             "find" => {
@@ -211,13 +347,21 @@ impl State {
         }
         let current = self.layout.page_at(-ui.get_scroll_y() + 30.0);
         let size = self.sizes[current];
+        let pair = if self.mode == ReadingMode::Facing {
+            self.sizes.get(current + 1).copied()
+        } else {
+            None
+        };
+        let fit_width = size.width + pair.map_or(0., |s| s.width);
+        let fit_height = size.height.max(pair.map_or(0., |s| s.height));
+        let fit_space = if pair.is_some() { 78. } else { 62. };
         let new_zoom = match action {
             "zoom-in" => Some(self.zoom * 1.25),
             "zoom-out" => Some(self.zoom / 1.25),
-            "fit-width" => Some((ui.get_view_width() - 62.0) / (size.width * 96.0 / 72.0)),
+            "fit-width" => Some((ui.get_view_width() - fit_space) / (fit_width * 96.0 / 72.0)),
             "fit-page" => Some(
-                ((ui.get_view_width() - 62.0) / (size.width * 96.0 / 72.0))
-                    .min((ui.get_view_height() - 48.0) / (size.height * 96.0 / 72.0)),
+                ((ui.get_view_width() - fit_space) / (fit_width * 96.0 / 72.0))
+                    .min((ui.get_view_height() - 48.0) / (fit_height * 96.0 / 72.0)),
             ),
             _ => None,
         };
@@ -231,10 +375,12 @@ impl State {
             }
             self.previews = std::mem::take(&mut self.images);
             self.zoom_started = Instant::now();
-            self.layout = Layout::new(
+            self.layout = Layout::with_mode(
                 &self.sizes,
                 self.zoom,
-                (ui.get_view_width() - 14.0).max(1.0),
+                (ui.get_view_width() - 14.).max(1.),
+                self.mode,
+                self.reading_page,
             );
             ui.set_document_height(self.layout.height);
             ui.set_document_width(self.layout.width);
@@ -247,8 +393,23 @@ impl State {
                 .event("zoom_input", serde_json::json!({"zoom":self.zoom}));
         } else {
             match action {
-                "next" => self.navigate(ui, current + 1),
-                "previous" => self.navigate(ui, current.saturating_sub(1)),
+                "next" => self.navigate(
+                    ui,
+                    current
+                        + if self.mode == ReadingMode::Facing {
+                            2
+                        } else {
+                            1
+                        },
+                ),
+                "previous" => self.navigate(
+                    ui,
+                    current.saturating_sub(if self.mode == ReadingMode::Facing {
+                        2
+                    } else {
+                        1
+                    }),
+                ),
                 "first" => self.navigate(ui, 0),
                 "last" => self.navigate(ui, self.sizes.len() - 1),
                 "down" => ui.set_scroll_y(
@@ -268,13 +429,23 @@ impl State {
                 break;
             };
             changed |= self.tools.event(ui, self.document, &event);
+            self.navigation
+                .event(ui, self.document, self.editor.revision, &event);
             changed |= self.edit_event(ui, &event);
+            if matches!(&event,Event::Changed{document,..} if *document==self.document) {
+                self.navigation.reset(ui);
+                self.engine.outlines(self.document, self.editor.revision);
+                self.reading_page = self.reading_page.min(self.sizes.len().saturating_sub(1));
+                self.pointer = None;
+            }
             match event {
                 Event::Opened {
                     document,
                     info,
                     elapsed,
                 } if document == self.document => {
+                    self.navigation.reset(ui);
+                    self.engine.outlines(self.document, self.editor.revision);
                     self.sizes = vec![info.first_page; info.pages];
                     ui.set_page_count(info.pages as i32);
                     ui.set_loading(false);
@@ -374,6 +545,27 @@ impl State {
             self.previews.clear();
             changed = true;
         }
+        if let Some((page, x, y)) = self.pointer
+            && let Some(rect) = self.layout.pages.get(page)
+        {
+            let local_y = rect.y + y + ui.get_scroll_y();
+            let delta = if local_y < 32. {
+                -18.
+            } else if local_y > ui.get_view_height() - 32. {
+                18.
+            } else {
+                0.
+            };
+            if delta != 0. {
+                let old = -ui.get_scroll_y();
+                let next =
+                    (old + delta).clamp(0., (self.layout.height - ui.get_view_height()).max(0.));
+                ui.set_scroll_y(-next);
+                if next != old {
+                    self.select_text(ui, page, x, y + next - old, 1);
+                }
+            }
+        }
         let mut view = Viewport {
             width: (ui.get_view_width() - 14.0).max(1.0),
             height: ui.get_view_height().max(1.0),
@@ -400,7 +592,13 @@ impl State {
                     self.render_error = None;
                 }
                 self.previous_view = Some(signature);
-                self.layout = Layout::new(&self.sizes, self.zoom, view.width);
+                self.layout = Layout::with_mode(
+                    &self.sizes,
+                    self.zoom,
+                    view.width,
+                    self.mode,
+                    self.reading_page,
+                );
                 ui.set_document_width(self.layout.width);
                 ui.set_document_height(self.layout.height);
                 if refined {
@@ -453,17 +651,25 @@ impl State {
         let last = *visible.end();
         let resident: Vec<usize> =
             (first.saturating_sub(2)..=(last + 2).min(self.sizes.len() - 1)).collect();
-        self.edit_refresh(ui, &resident);
+        let active: Vec<_> = resident
+            .iter()
+            .copied()
+            .filter(|&p| self.layout.pages[p].width > 0.)
+            .collect();
+        self.edit_refresh(ui, &active);
         self.tools.refresh(
             ui,
             &self.engine,
             self.document,
             &self.layout,
             self.zoom,
-            &resident,
+            &active,
         );
+        self.navigation
+            .refresh(&self.engine, self.document, self.editor.revision, &resident);
         let pages = resident
             .iter()
+            .filter(|&&index| self.layout.pages[index].width > 0.)
             .map(|&index| {
                 let page = self.layout.pages[index];
                 PageSurface {

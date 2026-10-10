@@ -19,7 +19,7 @@ The first build downloads public Rust dependencies. The application itself has n
 
 Open PDF or Ctrl+O opens the native picker. Use the scrollbars or wheel to browse, enter a page number to jump, and use toolbar controls to zoom or fit the page. Ctrl +/− changes zoom, Ctrl+0 fits width, PgUp/PgDn changes page, arrows scroll, and Home/End navigates to the beginning/end. Zoom is limited to 25–400%.
 
-Encrypted PDFs show a masked password form with retry and cancel. Ctrl+F or Find opens case-insensitive search; Enter/Next and Previous move between highlighted matches. Pages toggles lazy thumbnails; click one to jump. Drag across text within a page, then press Ctrl+C or Copy selection. Copy restrictions are respected. Image-only pages have no selectable text; OCR and selection across page boundaries are deferred. Passwords, queries, and copied text are not written to traces.
+Encrypted PDFs show a masked password form with retry and cancel. Ctrl+F or Find opens case-insensitive search; Enter/Next and Previous move between highlighted matches. Pages toggles lazy thumbnails; click one to jump. Use Bookmarks to navigate document outlines. Click an internal link to jump to its destination, or a web link to open the default browser. The view picker offers Continuous, Single page, and Facing pages (1–2, 3–4). Drag across text and page boundaries, then press Ctrl+C or Copy selection. Drag near the viewport edge to scroll. Selection is limited to 16 pages, with page boundaries copied as blank lines; highlighting remains single-page. Copy restrictions are respected. Image-only pages have no selectable text; OCR is deferred. Passwords, queries, and copied text are not written to traces.
 
 ## Validation
 
@@ -31,7 +31,7 @@ Ctrl+S or Save commits the current PDF in place. Ctrl+Shift+S or Save As copy cr
 
 Manage pages accepts ranges such as `1-3,5`. Rotate or delete selected pages, move the current page to a new position, insert a blank page or PDF after the current page, or merge PDFs at the end. Extract writes selected pages to a new PDF. Split writes two PDFs into a chosen folder, dividing after the current page. At least one page must remain. Annotation and page changes share Ctrl+Z/Ctrl+Y undo/redo, including after saving; filenames and exported files are outside undo history.
 
-Editing history retains up to 200 commands within 128 MiB of serialized snapshots. A change is rejected if its before/after pair cannot fit. This excludes native clones, serialization buffers, and renderer memory. Editing supports up to 100,000 pages; each import accepts at most 16 PDFs. Imported PDFs must allow copying and open without a password. Imports preserve supported text notes and highlights; PDFs with links, forms, popups or other annotation types are rejected before changing the open document. Bookmarks are not imported. Page assembly and annotation permissions are respected. Extract/split require copying and page assembly permission, remove bookmarks, and preserve encryption; original passwords remain necessary. Page extraction/deletion is not secure redaction: document metadata or other references can retain excluded content.
+Editing history retains up to 200 commands within 128 MiB of serialized snapshots. A change is rejected if its before/after pair cannot fit. This excludes native clones, serialization buffers, and renderer memory. Editing supports up to 100,000 pages; each import accepts at most 16 PDFs. Imported PDFs must allow copying and open without a password. Imports preserve supported links, named/internal destinations, annotation appearance streams, popup relationships, and standard AcroForm fields. Imported field names are namespaced; incompatible form resources, additional actions, XFA, signatures, calculation order, and unsupported actions are rejected transactionally. Form filling is not implemented. Bookmarks are not imported. Page assembly and annotation permissions are respected. Extract/split require copying and page assembly permission, remove bookmarks, and preserve encryption; original passwords remain necessary. Page extraction/deletion is not secure redaction: document metadata or other references can retain excluded content.
 
 ```powershell
 ./scripts/check.ps1
@@ -44,6 +44,8 @@ Fixtures are checked in with provenance/hashes in `tests/corpus/manifest.json`. 
 python -m pip install --target .tools/python pypdf==6.1.1
 python scripts/complete-corpus.py
 python scripts/reader-corpus.py
+python scripts/navigation-corpus.py
+python scripts/merge-corpus.py
 ```
 
 Independent PDFs retain upstream copyrights and their recorded source URLs. Encrypted fixture password: `pdfree-test`.
@@ -56,11 +58,13 @@ Annotation, save-copy, and rename checks: [annotation validation](benchmarks/res
 
 Native editing, direct save, and page-tool checks: [page tools validation](benchmarks/results/page-tools.md).
 
+Bookmarks, links, reading modes, cross-page selection and interactive merging: [navigation validation](benchmarks/results/navigation.md).
+
 ## Known limits
 
 The application raster cache is bounded at 128 MiB. MuPDF 0.8.0 fixes its native-store threshold at 256 MiB; the planned 64 MiB target remains unmet. Native allocations, Slint images, GPU resources, and live document/display-list objects are additional memory. Cancellation drops queued/stale work; active native calls finish. Malicious native inputs are not isolated in a separate process.
 
-Search is capped at 10,000 matches and 512 UTF-8 bytes per query. Selectable text is capped at 100,000 characters per page, retained for at most 16 nearby pages. Thumbnails retain at most 32 nearby rows. Existing text/image content editing, forms, OCR, redaction, signatures, and AI are not implemented. Annotation editing supports Text notes and Highlight annotations; other annotation types are preserved in the current document but have no editor. See the feature matrix for precise status.
+Search is capped at 10,000 matches and 512 UTF-8 bytes per query. Selectable text is capped at 100,000 characters per page, retained for at most 16 selected/nearby pages. Thumbnails retain at most 32 nearby rows. Existing text/image content editing, forms, OCR, redaction, signatures, and AI are not implemented. Annotation editing supports Text notes and Highlight annotations; other annotation types are preserved in the current document but have no editor. See the feature matrix for precise status.
 
 ## License
 

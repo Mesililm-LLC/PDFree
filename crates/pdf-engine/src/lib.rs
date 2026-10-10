@@ -2,6 +2,7 @@
 mod coordinator;
 mod editing;
 mod files;
+mod navigation;
 mod raster;
 mod reader;
 
@@ -139,6 +140,19 @@ impl std::error::Error for EngineError {}
 
 #[derive(Debug)]
 pub enum Event {
+    Outlines {
+        document: u64,
+        revision: u64,
+        entries: Vec<viewer_core::OutlineEntry>,
+        truncated: bool,
+    },
+    Links {
+        document: u64,
+        revision: u64,
+        page: usize,
+        links: Vec<viewer_core::PageLink>,
+        truncated: bool,
+    },
     Changed {
         document: u64,
         operation: u64,
@@ -242,6 +256,8 @@ struct View {
 
 #[derive(Default)]
 struct Desired {
+    outlines: Option<(u64, u64)>,
+    links: Option<(u64, u64, Vec<usize>)>,
     annotations: Option<(u64, u64, Vec<usize>)>,
     open: Option<Open>,
     view: Option<View>,
@@ -330,6 +346,8 @@ impl Engine {
             password,
         });
         desired.view = None;
+        desired.outlines = None;
+        desired.links = None;
         desired.text = None;
         desired.thumbnails = None;
         desired.search = None;
@@ -339,6 +357,15 @@ impl Engine {
         let _ = self.wake.try_send(());
     }
 
+    pub fn outlines(&self, document: u64, revision: u64) {
+        self.shared.desired.lock().unwrap().outlines = Some((document, revision));
+        let _ = self.wake.try_send(());
+    }
+    pub fn links_pages(&self, document: u64, revision: u64, pages: Vec<usize>) {
+        self.shared.desired.lock().unwrap().links =
+            Some((document, revision, pages.into_iter().take(16).collect()));
+        let _ = self.wake.try_send(());
+    }
     pub fn text_pages(&self, document: u64, pages: Vec<usize>) {
         self.shared.desired.lock().unwrap().text =
             Some((document, pages.into_iter().take(16).collect()));
@@ -537,13 +564,17 @@ mod request_tests {
         engine.text_pages(1, (0..10_000).collect());
         engine.thumbnails(1, (0..10_000).collect());
         engine.note_pages(1, (0..10_000).collect());
+        engine.links_pages(1, 0, (0..10_000).collect());
+        engine.outlines(1, 0);
         {
             let desired = engine.shared.desired.lock().unwrap();
             assert_eq!(desired.text.as_ref().unwrap().1.len(), 16);
             assert_eq!(desired.thumbnails.as_ref().unwrap().1.len(), 32);
             assert_eq!(desired.notes.as_ref().unwrap().1.len(), 16);
+            assert_eq!(desired.links.as_ref().unwrap().2.len(), 16);
         }
         engine.text_pages(1, vec![99]);
+        engine.links_pages(1, 1, vec![97]);
         engine.thumbnails(1, vec![98]);
         engine.search(1, 10, "x".repeat(100_000));
         assert!(engine.rename(1, 1, "first.pdf".into()));
@@ -551,6 +582,7 @@ mod request_tests {
         assert!(!engine.save_as(1, 3, PathBuf::from("third.pdf"), vec![]));
         let desired = engine.shared.desired.lock().unwrap();
         assert_eq!(desired.text.as_ref().unwrap().1, vec![99]);
+        assert_eq!(desired.links.as_ref().unwrap(), &(1, 1, vec![97]));
         assert_eq!(desired.thumbnails.as_ref().unwrap().1, vec![98]);
         assert!(desired.search.as_ref().unwrap().2.is_empty());
     }

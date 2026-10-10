@@ -2,12 +2,14 @@
 mod cache;
 mod editing;
 mod geometry;
+mod navigation;
 mod queue;
 mod snapshots;
 mod text;
 pub use cache::*;
 pub use editing::*;
 pub use geometry::*;
+pub use navigation::*;
 pub use queue::*;
 pub use snapshots::*;
 pub use text::*;

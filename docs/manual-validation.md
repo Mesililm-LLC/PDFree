@@ -39,3 +39,13 @@ This milestone adds direct Ctrl+S saving and native page/annotation changes. Use
 Try page ranges, rotation, moving, deletion, blank insertion, PDF insertion/merge, extraction and two-part split. Verify unsupported imports and output conflicts report errors without changing the current PDF or overwriting files. Subset exports remove bookmarks and are not secure redaction. Imports containing links, forms, popups or unsupported annotations are intentionally rejected.
 
 Automated software-platform tests simulate UI events; they do not certify physical Windows picker interaction, file-permission failure recovery, mixed-monitor behavior, or cross-reader appearance. These remain manual qualification tasks.
+
+
+## Navigation and reading modes
+
+- Open navigation.pdf and a PDF with a large outline. Toggle Bookmarks, follow nested entries, and return through page entry. PDFs without outlines should show an empty message.
+- Click internal and web links; web links should open the default browser only on an explicit click. Drag across linked text to select it without opening the link. Unsupported actions should show a message.
+- Switch Continuous, Single page and Facing pages; verify page jumps, keyboard next/previous, odd final pages, fit width/page and mixed page sizes.
+- Drag across adjacent pages in both directions and use Ctrl+C. Drag near the viewport edge to scroll; releasing must stop scrolling. More than 16 pages should produce an explicit limit message and no partial copy.
+- Resize to 680 × 480 with Bookmarks open, then move between monitors with different scaling. Open and view controls must remain reachable; Ctrl+C works while the Copy selection button is hidden on narrow windows.
+- Merge interactive-merge.pdf into an owned blank copy, save, reopen in Edge or another independent viewer, and inspect links, note/popup, square appearance and form value. PDFree preserves imported form fields but does not fill them. Try an unsupported source and verify no partial insertion or history loss.

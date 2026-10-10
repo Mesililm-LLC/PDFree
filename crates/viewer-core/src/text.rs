@@ -52,30 +52,27 @@ pub struct SearchHit {
 }
 
 impl PageText {
-    pub fn select(&self, start: (f32, f32), end: (f32, f32)) -> TextSelection {
-        if ![start.0, start.1, end.0, end.1]
-            .iter()
-            .all(|v| v.is_finite())
-        {
-            return TextSelection::default();
+    pub fn nearest_index(&self, point: (f32, f32)) -> Option<usize> {
+        if !point.0.is_finite() || !point.1.is_finite() {
+            return None;
         }
-        let nearest = |point| {
-            self.glyphs
-                .iter()
-                .enumerate()
-                .min_by(|(_, a), (_, b)| {
-                    a.bounds
-                        .distance(point)
-                        .total_cmp(&b.bounds.distance(point))
-                })
-                .map(|(i, _)| i)
-        };
-        let (Some(a), Some(b)) = (nearest(start), nearest(end)) else {
-            return TextSelection::default();
-        };
+        self.glyphs
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| {
+                a.bounds
+                    .distance(point)
+                    .total_cmp(&b.bounds.distance(point))
+            })
+            .map(|(i, _)| i)
+    }
+
+    pub fn select_indices(&self, start: usize, end: usize) -> TextSelection {
         let mut result = TextSelection::default();
         let mut line = None;
-        for glyph in &self.glyphs[a.min(b)..=a.max(b)] {
+        for glyph in
+            &self.glyphs[start.min(self.glyphs.len())..end.max(start).min(self.glyphs.len())]
+        {
             if line != Some(glyph.line) {
                 if line.is_some() {
                     result.text.push('\n');
@@ -88,5 +85,17 @@ impl PageText {
             result.text.push(glyph.ch);
         }
         result
+    }
+    pub fn select(&self, start: (f32, f32), end: (f32, f32)) -> TextSelection {
+        if ![start.0, start.1, end.0, end.1]
+            .iter()
+            .all(|v| v.is_finite())
+        {
+            return TextSelection::default();
+        }
+        let (Some(a), Some(b)) = (self.nearest_index(start), self.nearest_index(end)) else {
+            return TextSelection::default();
+        };
+        self.select_indices(a.min(b), a.max(b) + 1)
     }
 }

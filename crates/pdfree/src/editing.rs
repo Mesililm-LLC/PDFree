@@ -12,8 +12,8 @@ pub enum ToolDialog {
     Split,
 }
 #[derive(Default)]
-pub(super) struct Editor {
-    pub(super) revision: u64,
+pub(crate) struct Editor {
+    pub(crate) revision: u64,
     dirty: bool,
     operation: u64,
     wanted: Vec<usize>,

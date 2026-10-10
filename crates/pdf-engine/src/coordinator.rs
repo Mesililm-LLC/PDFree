@@ -97,6 +97,7 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
     let mut notes_queue = std::collections::VecDeque::new();
     let mut notes_cache = HashMap::new();
     let mut reader = crate::reader::Reader::default();
+    let mut navigation = crate::navigation::Navigation::default();
     let mut document_id = 0;
     let mut geometry: Vec<Option<PageSize>> = Vec::new();
     let mut cursor = 0;
@@ -117,6 +118,7 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
             annotation_queue.clear();
             annotation_cache.clear();
             reader = crate::reader::Reader::default();
+            navigation = crate::navigation::Navigation::default();
             lists.clear();
             document = None;
             geometry.clear();
@@ -233,6 +235,7 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                         lists.clear();
                         queue.replace(vec![]);
                         reader = crate::reader::Reader::default();
+                        navigation = crate::navigation::Navigation::default();
                         notes_queue.clear();
                         notes_cache.clear();
                         annotation_queue.clear();
@@ -589,6 +592,19 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
             notes_cache.retain(|p, _| pages.contains(p));
             notes_queue = pages.into();
         }
+        let revision = journal.as_ref().map_or(0, |h| h.revision());
+        if let Some((id, rev)) = desired.outlines
+            && id == document_id
+            && rev == revision
+        {
+            navigation.request_outlines();
+        }
+        if let Some((id, rev, pages)) = desired.links
+            && id == document_id
+            && rev == revision
+        {
+            navigation.request_links(pages, geometry.len());
+        }
         if let Some((id, pages)) = desired.text
             && id == document_id
         {
@@ -898,6 +914,14 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                         );
                     }
                 }
+            }
+            if let Some(event) = navigation.tick(
+                doc,
+                document_id,
+                journal.as_ref().map_or(0, |h| h.revision()),
+                &shared,
+            ) {
+                emit(&shared, &events, event);
             }
             if let Some(event) = reader.tick(doc, document_id, geometry.len(), can_copy, &shared) {
                 emit(&shared, &events, event);

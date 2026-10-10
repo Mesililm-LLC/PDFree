@@ -4,6 +4,14 @@ pub const TILE_SIZE: u32 = 512;
 const MARGIN: f32 = 24.0;
 const GAP: f32 = 16.0;
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ReadingMode {
+    #[default]
+    Continuous,
+    Single,
+    Facing,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PageSize {
     pub width: f32,
@@ -49,6 +57,8 @@ pub struct Layout {
     pub pages: Vec<PageRect>,
     pub width: f32,
     pub height: f32,
+    active: std::ops::Range<usize>,
+    mode: ReadingMode,
 }
 
 pub fn clamp_zoom(zoom: f32) -> f32 {
@@ -65,6 +75,7 @@ impl Layout {
         let fraction = self
             .pages
             .get(page)
+            .filter(|p| p.height > 0.0)
             .map(|p| ((y - p.y) / p.height).clamp(0.0, 1.0))
             .unwrap_or(0.0);
         (page, fraction)
@@ -101,16 +112,84 @@ impl Layout {
             pages,
             width,
             height: (y - GAP + MARGIN).max(MARGIN * 2.0),
+            active: 0..sizes.len(),
+            mode: ReadingMode::Continuous,
+        }
+    }
+
+    /// Keep document page indexes stable while laying out only the active page or spread.
+    pub fn with_mode(
+        sizes: &[PageSize],
+        zoom: f32,
+        viewport_width: f32,
+        mode: ReadingMode,
+        current_page: usize,
+    ) -> Self {
+        if mode == ReadingMode::Continuous || sizes.is_empty() {
+            return Self::new(sizes, zoom, viewport_width);
+        }
+        let current = current_page.min(sizes.len() - 1);
+        let first = if mode == ReadingMode::Facing {
+            current / 2 * 2
+        } else {
+            current
+        };
+        let end = (first + if mode == ReadingMode::Facing { 2 } else { 1 }).min(sizes.len());
+        let scale = clamp_zoom(zoom) * 96.0 / 72.0;
+        let row_width = sizes[first..end]
+            .iter()
+            .map(|s| s.width * scale)
+            .sum::<f32>()
+            + GAP * (end - first - 1) as f32;
+        let width = viewport_width.max(1.0).max(row_width + 2.0 * MARGIN);
+        let mut pages = vec![
+            PageRect {
+                x: 0.0,
+                y: 0.0,
+                width: 0.0,
+                height: 0.0
+            };
+            sizes.len()
+        ];
+        let mut x = (width - row_width) / 2.0;
+        let mut row_height: f32 = 0.0;
+        for page in first..end {
+            let size = sizes[page];
+            pages[page] = PageRect {
+                x,
+                y: MARGIN,
+                width: size.width * scale,
+                height: size.height * scale,
+            };
+            x += pages[page].width + GAP;
+            row_height = row_height.max(pages[page].height);
+        }
+        Self {
+            pages,
+            width,
+            height: row_height + 2.0 * MARGIN,
+            active: first..end,
+            mode,
         }
     }
 
     pub fn page_at(&self, y: f32) -> usize {
-        self.pages
+        if self.active.is_empty() {
+            return 0;
+        }
+        if self.mode != ReadingMode::Continuous {
+            return self.active.start;
+        }
+        self.pages[self.active.clone()]
             .partition_point(|p| p.y + p.height < y)
-            .min(self.pages.len().saturating_sub(1))
+            .min(self.active.len().saturating_sub(1))
+            + self.active.start
     }
 
     pub fn visible_pages(&self, view: Viewport) -> std::ops::RangeInclusive<usize> {
+        if self.mode != ReadingMode::Continuous && !self.active.is_empty() {
+            return self.active.start..=self.active.end - 1;
+        }
         self.page_at(view.scroll_y)..=self.page_at(view.scroll_y + view.height)
     }
 
@@ -141,6 +220,9 @@ impl Layout {
             .chain((last + 1)..=(last + neighbors).min(self.pages.len() - 1));
         for page in visible_first {
             let rect = self.pages[page];
+            if rect.width <= 0.0 || rect.height <= 0.0 {
+                continue;
+            }
             let prefetch = !visible.contains(&page);
             // Prefetch only the leading screen of a neighbor, never its whole raster.
             let (top, bottom) = if prefetch {

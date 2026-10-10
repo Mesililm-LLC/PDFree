@@ -64,6 +64,20 @@ fn reader_flows_use_real_native_text_pointer_events_and_a_mock_clipboard() {
         Trace::new(Instant::now(), None).unwrap(),
         false,
     )));
+    let pointer_state = state.clone();
+    let pointer_ui = ui.as_weak();
+    ui.on_reader_pointer(move |x, y, phase| {
+        pointer_state
+            .borrow_mut()
+            .reader_pointer(&pointer_ui.upgrade().unwrap(), x, y, phase)
+    });
+    let click_state = state.clone();
+    let click_ui = ui.as_weak();
+    ui.on_reader_click(move |x, y| {
+        click_state
+            .borrow_mut()
+            .reader_click(&click_ui.upgrade().unwrap(), x, y)
+    });
     let callback_state = state.clone();
     let weak = ui.as_weak();
     ui.on_select_text(move |page, x, y, phase| {
@@ -204,6 +218,188 @@ fn reader_flows_use_real_native_text_pointer_events_and_a_mock_clipboard() {
         button: PointerEventButton::Left,
     });
     assert_eq!(ui.get_page_entry(), "2");
+    // Native outlines, internal navigation, mode changes and both selection directions.
+    state.borrow_mut().open(&ui, fixture("navigation.pdf"));
+    wait(&mut state.borrow_mut(), &ui, |state, ui| {
+        ui.get_ready()
+            && ui.get_bookmarks().row_count() > 0
+            && state.tools.test_text(0).is_some()
+            && state.navigation.test_links(0).is_some()
+    });
+    state.borrow_mut().activate_bookmark(&ui, 1);
+    assert_eq!(ui.get_page_entry(), "2");
+    state.borrow_mut().navigate(&ui, 0);
+    let internal = state
+        .borrow()
+        .navigation
+        .test_links(0)
+        .unwrap()
+        .into_iter()
+        .find(|l| {
+            matches!(
+                l.destination,
+                viewer_core::LinkDestination::Internal { page: 1, .. }
+            )
+        })
+        .unwrap();
+    let scale = state.borrow().zoom * 96. / 72.;
+    state.borrow_mut().activate_link(
+        &ui,
+        0,
+        (internal.bounds.left + internal.bounds.right) / 2. * scale,
+        (internal.bounds.top + internal.bounds.bottom) / 2. * scale,
+    );
+    assert_eq!(ui.get_page_entry(), "2");
+    state.borrow_mut().navigate(&ui, 0);
+    state.borrow_mut().action(&ui, "bookmarks");
+    crate::capture::snapshot(&ui, "navigation-bookmarks").unwrap();
+    state.borrow_mut().activate_bookmark(&ui, 0);
+    state.borrow_mut().action(&ui, "view-single");
+    state.borrow_mut().navigate(&ui, 2);
+    state.borrow_mut().tick(&ui);
+    assert_eq!(ui.get_pages().row_count(), 1);
+    assert_eq!(ui.get_pages().row_data(0).unwrap().number, 3);
+    state.borrow_mut().action(&ui, "view-facing");
+    state.borrow_mut().navigate(&ui, 0);
+    state.borrow_mut().tick(&ui);
+    assert_eq!(ui.get_pages().row_count(), 2);
+    crate::capture::snapshot(&ui, "navigation-facing").unwrap();
+    state.borrow_mut().action(&ui, "view-continuous");
+    state.borrow_mut().navigate(&ui, 0);
+    wait(&mut state.borrow_mut(), &ui, |state, _| {
+        state.tools.test_text(0).is_some() && state.tools.test_text(1).is_some()
+    });
+    let first = state.borrow().tools.test_text(0).unwrap();
+    let second = state.borrow().tools.test_text(1).unwrap();
+    assert!(!first.glyphs.is_empty() && !second.glyphs.is_empty());
+    let from = first.glyphs[0].bounds;
+    let to = second.glyphs.last().unwrap().bounds;
+    let scale = state.borrow().zoom * 96. / 72.;
+    state
+        .borrow_mut()
+        .select_text(&ui, 0, from.left * scale, from.top * scale, 0);
+    state
+        .borrow_mut()
+        .select_text(&ui, 1, to.right * scale, to.bottom * scale, 2);
+    let forward = ui.get_selection_text();
+    assert!(forward.contains("\n\n"));
+    ui.invoke_copy_selection();
+    assert_eq!(*clipboard.borrow(), forward.as_str());
+    state
+        .borrow_mut()
+        .select_text(&ui, 1, to.right * scale, to.bottom * scale, 0);
+    state
+        .borrow_mut()
+        .select_text(&ui, 0, from.left * scale, from.top * scale, 2);
+    assert_eq!(ui.get_selection_text(), forward);
+    assert!(state.borrow().tools.selected_highlight().is_none());
+    crate::capture::snapshot(&ui, "navigation-cross-page-selection").unwrap();
+    // Dispatch a captured drag across the two facing pages, rather than bypassing TouchArea.
+    state.borrow_mut().action(&ui, "view-facing");
+    state.borrow_mut().navigate(&ui, 0);
+    state.borrow_mut().action(&ui, "fit-page");
+    wait(&mut state.borrow_mut(), &ui, |state, _| {
+        state.tools.test_text(0).is_some() && state.tools.test_text(1).is_some()
+    });
+    window.draw_if_needed(|renderer| {
+        renderer.render(&mut buffer, 1770);
+    });
+    let scale = state.borrow().zoom * 96. / 72.;
+    let pointer_position = |page: usize, r: viewer_core::TextRect| {
+        let rect = state.borrow().layout.pages[page];
+        slint::LogicalPosition::new(
+            rect.x
+                + (r.left + r.right) / 2. * scale
+                + ui.get_scroll_x()
+                + if ui.get_bookmarks_visible() {
+                    230.
+                } else if ui.get_sidebar_visible() {
+                    180.
+                } else {
+                    0.
+                },
+            offset_y + rect.y + (r.top + r.bottom) / 2. * scale + ui.get_scroll_y(),
+        )
+    };
+    let begin = pointer_position(0, from);
+    let end = pointer_position(1, to);
+    ui.window().dispatch_event(WindowEvent::PointerPressed {
+        position: begin,
+        button: PointerEventButton::Left,
+    });
+    ui.window()
+        .dispatch_event(WindowEvent::PointerMoved { position: end });
+    state.borrow_mut().tick(&ui);
+    ui.window().dispatch_event(WindowEvent::PointerReleased {
+        position: end,
+        button: PointerEventButton::Left,
+    });
+    assert!(ui.get_selection_text().contains("\n\n"));
+    assert!(state.borrow().pointer.is_none());
+    let stopped = ui.get_scroll_y();
+    state.borrow_mut().tick(&ui);
+    assert_eq!(ui.get_scroll_y(), stopped);
+    crate::capture::snapshot(&ui, "navigation-facing-selection").unwrap();
+    // Hold the captured pointer near the lower edge and verify actual cross-page autoscroll.
+    state.borrow_mut().action(&ui, "view-continuous");
+    state.borrow_mut().zoom = 1.;
+    state.borrow_mut().dirty = true;
+    state.borrow_mut().navigate(&ui, 0);
+    state.borrow_mut().tick(&ui);
+    window.draw_if_needed(|renderer| {
+        renderer.render(&mut buffer, 1770);
+    });
+    let page = state.borrow().layout.pages[0];
+    let scale = state.borrow().zoom * 96. / 72.;
+    let begin = slint::LogicalPosition::new(
+        230. + page.x + (from.left + from.right) / 2. * scale + ui.get_scroll_x(),
+        offset_y + page.y + (from.top + from.bottom) / 2. * scale + ui.get_scroll_y(),
+    );
+    let edge = slint::LogicalPosition::new(begin.x, 850. - 32. - 5.);
+    ui.window().dispatch_event(WindowEvent::PointerPressed {
+        position: begin,
+        button: PointerEventButton::Left,
+    });
+    ui.window()
+        .dispatch_event(WindowEvent::PointerMoved { position: edge });
+    for _ in 0..45 {
+        state.borrow_mut().tick(&ui);
+    }
+    assert!(
+        ui.get_scroll_y() < -500.,
+        "autoscroll did not advance: {}",
+        ui.get_scroll_y()
+    );
+    ui.window().dispatch_event(WindowEvent::PointerReleased {
+        position: edge,
+        button: PointerEventButton::Left,
+    });
+    wait(&mut state.borrow_mut(), &ui, |_, ui| {
+        ui.get_selection_text().contains("\n\n")
+    });
+    assert!(state.borrow().pointer.is_none());
+    let stopped = ui.get_scroll_y();
+    for _ in 0..3 {
+        state.borrow_mut().tick(&ui);
+    }
+    assert_eq!(stopped, ui.get_scroll_y());
+    state.borrow_mut().reader_pointer(&ui, 0., 0., 0);
+    state
+        .borrow_mut()
+        .reader_pointer(&ui, page.x + 100., page.y + 200., 1);
+    assert!(state.borrow().pointer.is_none());
+    assert!(ui.get_selection_text().is_empty());
+    state
+        .borrow_mut()
+        .reader_pointer(&ui, page.x + 100., page.y + 200., 0);
+    state.borrow_mut().reader_pointer(&ui, 0., 0., 3);
+    assert!(state.borrow().pointer.is_none());
+    crate::capture::snapshot(&ui, "navigation-autoscroll").unwrap();
+    ui.window().set_size(slint::LogicalSize::new(680., 480.));
+    state.borrow_mut().tick(&ui);
+    crate::capture::snapshot(&ui, "navigation-small").unwrap();
+    ui.window().set_size(slint::LogicalSize::new(1180., 850.));
+    let before_restricted = clipboard.borrow().clone();
     state.borrow_mut().open(&ui, fixture("restricted-copy.pdf"));
     wait(&mut state.borrow_mut(), &ui, |_, ui| {
         ui.get_password_required()
@@ -214,7 +410,7 @@ fn reader_flows_use_real_native_text_pointer_events_and_a_mock_clipboard() {
     assert!(ui.get_selection_text().is_empty());
     ui.set_selection_text("must not copy".into());
     ui.invoke_copy_selection();
-    assert_eq!(*clipboard.borrow(), "PDFree");
+    assert_eq!(*clipboard.borrow(), before_restricted);
     state.borrow_mut().open(&ui, fixture("malformed.pdf"));
     wait(&mut state.borrow_mut(), &ui, |_, ui| !ui.get_loading());
     assert!(!ui.get_ready());

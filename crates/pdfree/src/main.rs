@@ -3,6 +3,7 @@
 mod app;
 mod capture;
 mod features;
+mod navigation;
 mod trace;
 
 use slint::ComponentHandle;
@@ -125,6 +126,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             search_state.borrow_mut().search(&ui, query.to_string());
         }
     });
+    let pointer_state = state.clone();
+    let pointer_ui = ui.as_weak();
+    ui.on_reader_pointer(move |x, y, phase| {
+        if let Some(ui) = pointer_ui.upgrade() {
+            pointer_state.borrow_mut().reader_pointer(&ui, x, y, phase);
+        }
+    });
+    let click_state = state.clone();
+    let click_ui = ui.as_weak();
+    ui.on_reader_click(move |x, y| {
+        if let Some(ui) = click_ui.upgrade() {
+            click_state.borrow_mut().reader_click(&ui, x, y);
+        }
+    });
+    let hover_state = state.clone();
+    let hover_ui = ui.as_weak();
+    ui.on_reader_hover(move |x, y| {
+        if let Some(ui) = hover_ui.upgrade() {
+            hover_state.borrow().reader_hover(&ui, x, y);
+        }
+    });
     let select_state = state.clone();
     let select_ui = ui.as_weak();
     ui.on_select_text(move |page, x, y, phase| {
@@ -143,6 +165,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             && page >= 0
         {
             thumbnail_state.borrow_mut().navigate(&ui, page as usize);
+        }
+    });
+    let hover_state = state.clone();
+    let hover_ui = ui.as_weak();
+    ui.on_hover_link(move |page, x, y| {
+        if let Some(ui) = hover_ui.upgrade() {
+            hover_state.borrow().hover_link(&ui, page as usize, x, y);
+        }
+    });
+    let link_state = state.clone();
+    let link_ui = ui.as_weak();
+    ui.on_page_link(move |page, x, y| {
+        if let Some(ui) = link_ui.upgrade() {
+            link_state
+                .borrow_mut()
+                .activate_link(&ui, page as usize, x, y);
+        }
+    });
+    let outline_state = state.clone();
+    let outline_ui = ui.as_weak();
+    ui.on_bookmark_click(move |index| {
+        if let Some(ui) = outline_ui.upgrade() {
+            outline_state
+                .borrow_mut()
+                .activate_bookmark(&ui, index as usize);
         }
     });
     let rename_state = state.clone();

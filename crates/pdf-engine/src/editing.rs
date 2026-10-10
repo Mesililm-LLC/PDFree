@@ -4,11 +4,11 @@ use mupdf::{
     color::AnnotationColor,
     pdf::{
         AnnotationFlags, InsertPdfOptions, InsertPosition, PageSelection, PdfAnnotation,
-        PdfAnnotationType, PdfDocument,
+        PdfAnnotationType, PdfDocument, PdfObject,
     },
 };
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
 };
@@ -378,86 +378,500 @@ fn insert(doc: &mut PdfDocument, paths: &[PathBuf], at: usize) -> Result<(), Str
         if total > 100_000 {
             return Err("Editing is limited to 100,000 pages".into());
         }
-        for p in 0..pages {
-            let page = source.load_pdf_page(p).map_err(error)?;
-            if let Some(annots) = page.object().get_dict("Annots").map_err(error)? {
-                if annots.len().map_err(error)? > 2000 {
-                    return Err("Imported page has too many annotations".into());
-                }
-                for i in 0..annots.len().map_err(error)? {
-                    let a = annots
-                        .get_array(i as i32)
-                        .map_err(error)?
-                        .ok_or("Invalid annotation array")?;
-                    let subtype = a
-                        .get_dict("Subtype")
-                        .map_err(error)?
-                        .ok_or("Annotation subtype missing")?
-                        .as_name()
-                        .map_err(error)?;
-                    if !matches!(subtype.as_slice(), b"Text" | b"Highlight") {
-                        return Err("Import supports text notes and highlights; links, forms, popups and other annotations are not supported".into());
-                    }
-                }
-            }
-            for a in page.annotations() {
-                if a.quad_count().unwrap_or(0) > 1000
-                    || a.contents()
-                        .map_err(error)?
-                        .is_some_and(|s| s.len() > 16_384)
-                {
-                    return Err("Imported annotation exceeds reader limits".into());
-                }
-            }
-        }
         sources.push(source);
     }
     let mut target = at;
     for source in sources {
         let pages = source.page_count().map_err(error)?;
-        for p in 0..pages {
-            doc.insert_pdf(
-                &source,
-                InsertPdfOptions {
-                    source_pages: PageSelection::Pages(vec![p as usize]),
-                    target: InsertPosition::Before(target),
-                    ..Default::default()
-                },
+        let start = target;
+        doc.insert_pdf(
+            &source,
+            InsertPdfOptions {
+                source_pages: PageSelection::All,
+                target: InsertPosition::Before(target),
+                ..Default::default()
+            },
+        )
+        .map_err(error)?;
+        import_interactivity(doc, &source, start)?;
+        target += pages as usize;
+    }
+    Ok(())
+}
+/// Copy a bounded PDF object graph, replacing source page references with the
+/// already-grafted target pages. Cycles in popup/reply and field trees retain identity.
+struct ImportGraph<'a> {
+    target: &'a mut PdfDocument,
+    objects: HashMap<i32, PdfObject>,
+    nodes: usize,
+    named: HashMap<String, PdfObject>,
+    start: usize,
+    pages: usize,
+    page_refs: HashSet<i32>,
+    stream_bytes: usize,
+}
+impl ImportGraph<'_> {
+    fn destination(&mut self, value: &PdfObject, depth: usize) -> Result<PdfObject, String> {
+        if depth > 64 {
+            return Err("Destination nesting exceeds limits".into());
+        }
+        if value.is_name().map_err(error)? || value.is_string().map_err(error)? {
+            let name = if value.is_name().map_err(error)? {
+                String::from_utf8(value.as_name().map_err(error)?).map_err(error)?
+            } else {
+                value.as_string().map_err(error)?
+            };
+            let dest = self
+                .named
+                .get(&name)
+                .ok_or("Imported link names an unknown destination")?
+                .try_clone()
+                .map_err(error)?;
+            return self.destination(&dest, depth + 1);
+        }
+        if value.is_dict().map_err(error)? {
+            let dest = value
+                .get_dict("D")
+                .map_err(error)?
+                .ok_or("Invalid destination dictionary")?;
+            return self.destination(&dest, depth + 1);
+        }
+        if !value.is_array().map_err(error)? || value.len().map_err(error)? < 2 {
+            return Err("Imported link has an invalid destination".into());
+        }
+        let page = value
+            .get_array(0)
+            .map_err(error)?
+            .ok_or("Missing destination page")?;
+        if page.is_indirect().map_err(error)?
+            && !self.page_refs.contains(&page.as_indirect().map_err(error)?)
+        {
+            return Err("Imported destination does not reference an imported page".into());
+        }
+        let mut dest = self.copy(value, depth + 1)?;
+        if !page.is_indirect().map_err(error)? {
+            if !page.is_int().map_err(error)? {
+                return Err("Imported destination page is not an integer or page reference".into());
+            }
+            let index = page.as_int().map_err(error)?;
+            if index < 0 || index as usize >= self.pages {
+                return Err("Imported destination page is outside document".into());
+            }
+            dest.array_put(
+                0,
+                self.target
+                    .find_page((self.start + index as usize) as i32)
+                    .map_err(error)?,
             )
             .map_err(error)?;
-            let original = source.load_pdf_page(p).map_err(error)?;
-            let mut destination = doc.load_pdf_page(target as i32).map_err(error)?;
-            for a in original.annotations() {
-                let kind = a.r#type().map_err(error)?;
-                let mut copy = destination.create_annotation(kind).map_err(error)?;
-                match kind {
-                    PdfAnnotationType::Highlight => copy
-                        .set_quad_points(a.quad_points().map_err(error)?)
-                        .map_err(error)?,
-                    PdfAnnotationType::Text => {
-                        copy.set_rect(a.rect().map_err(error)?).map_err(error)?;
-                        if let Some(icon) = a.icon_name().map_err(error)? {
-                            copy.set_icon_name(icon).map_err(error)?;
-                        }
-                    }
-                    _ => return Err("Unsupported imported annotation".into()),
-                };
-                if let Some(text) = a.contents().map_err(error)? {
-                    copy.set_contents(text).map_err(error)?;
-                }
-                if let Some(color) = a.color().map_err(error)? {
-                    copy.set_color(color).map_err(error)?;
-                }
-                copy.set_opacity(a.opacity().map_err(error)?)
-                    .map_err(error)?;
-                if let Some(author) = a.author().map_err(error)? {
-                    copy.set_author(author).map_err(error)?;
-                }
-                copy.set_flags(a.flags().map_err(error)?).map_err(error)?;
-                copy.update().map_err(error)?;
-            }
-            target += 1;
         }
+        Ok(dest)
+    }
+    fn copy(&mut self, value: &PdfObject, depth: usize) -> Result<PdfObject, String> {
+        if depth > 64 || self.nodes >= 100_000 {
+            return Err("Imported interactive objects exceed complexity limits".into());
+        }
+        self.nodes += 1;
+        if value.is_indirect().map_err(error)? {
+            let id = value.as_indirect().map_err(error)?;
+            if let Some(existing) = self.objects.get(&id) {
+                return existing.try_clone().map_err(error);
+            }
+            let resolved = value
+                .resolve()
+                .map_err(error)?
+                .ok_or("Broken imported reference")?;
+            let mut reserved = self
+                .target
+                .add_object(&self.target.new_null())
+                .map_err(error)?;
+            self.objects
+                .insert(id, reserved.try_clone().map_err(error)?);
+            let copied = self.copy(&resolved, depth + 1)?;
+            reserved.write_object(&copied).map_err(error)?;
+            if value.is_stream().map_err(error)? {
+                if let Some(length) = resolved.get_dict("Length").map_err(error)? {
+                    let length = length.as_int().map_err(error)?;
+                    if length < 0 || length as usize > 64 * 1024 * 1024 {
+                        return Err("Imported stream exceeds 64 MiB limit".into());
+                    }
+                }
+                let bytes = value.read_raw_stream().map_err(error)?;
+                self.stream_bytes = self.stream_bytes.saturating_add(bytes.len());
+                if bytes.len() > 64 * 1024 * 1024 || self.stream_bytes > 128 * 1024 * 1024 {
+                    return Err("Imported stream exceeds 64 MiB limit".into());
+                }
+                reserved
+                    .write_raw_stream_buffer(&mupdf::Buffer::from_bytes(&bytes).map_err(error)?)
+                    .map_err(error)?;
+            }
+            return Ok(reserved);
+        }
+        if value.is_array().map_err(error)? {
+            if value.len().map_err(error)? > 10_000 {
+                return Err("Imported interactive array exceeds limits".into());
+            }
+            let mut copied = self.target.new_array().map_err(error)?;
+            for item in value.array_iter().map_err(error)? {
+                copied
+                    .array_push(self.copy(&item.map_err(error)?, depth + 1)?)
+                    .map_err(error)?;
+            }
+            return Ok(copied);
+        }
+        if value.is_dict().map_err(error)? {
+            if value.dict_len().map_err(error)? > 2000 {
+                return Err("Imported dictionary exceeds limits".into());
+            }
+            if value.get_dict("Type").map_err(error)?.is_some_and(|kind| {
+                kind.as_name()
+                    .is_ok_and(|name| matches!(name.as_slice(), b"Page" | b"Pages" | b"Catalog"))
+            }) {
+                return Err(
+                    "Imported interactivity references a foreign page tree or catalog".into(),
+                );
+            }
+            if value.get_dict("XFA").map_err(error)?.is_some() {
+                return Err("XFA forms cannot be merged yet".into());
+            }
+            if let Some(ft) = value.get_dict("FT").map_err(error)?
+                && ft.as_name().map_err(error)? == b"Sig"
+            {
+                return Err(
+                    "Signature fields cannot be merged without invalidating signatures".into(),
+                );
+            }
+            let annotation = value
+                .get_dict("Type")
+                .map_err(error)?
+                .is_some_and(|kind| kind.as_name().is_ok_and(|name| name == b"Annot"))
+                || value
+                    .get_dict("Subtype")
+                    .map_err(error)?
+                    .is_some_and(|kind| {
+                        kind.as_name().is_ok_and(|name| {
+                            matches!(
+                                name.as_slice(),
+                                b"Text"
+                                    | b"Link"
+                                    | b"FreeText"
+                                    | b"Line"
+                                    | b"Square"
+                                    | b"Circle"
+                                    | b"Polygon"
+                                    | b"PolyLine"
+                                    | b"Highlight"
+                                    | b"Underline"
+                                    | b"Squiggly"
+                                    | b"StrikeOut"
+                                    | b"Stamp"
+                                    | b"Caret"
+                                    | b"Ink"
+                                    | b"Popup"
+                                    | b"FileAttachment"
+                                    | b"Sound"
+                                    | b"Movie"
+                                    | b"Widget"
+                                    | b"Screen"
+                                    | b"PrinterMark"
+                                    | b"TrapNet"
+                                    | b"Watermark"
+                                    | b"3D"
+                                    | b"Redact"
+                                    | b"Projection"
+                                    | b"RichMedia"
+                            )
+                        })
+                    });
+            let field = value.get_dict("FT").map_err(error)?.is_some()
+                || (value.get_dict("T").map_err(error)?.is_some()
+                    && (value.get_dict("Kids").map_err(error)?.is_some()
+                        || value.get_dict("Parent").map_err(error)?.is_some()));
+            let action = value
+                .get_dict("Type")
+                .map_err(error)?
+                .is_some_and(|kind| kind.as_name().is_ok_and(|name| name == b"Action"));
+            if action {
+                validate_action(value, 0)?;
+            }
+            let goto = value
+                .get_dict("S")
+                .map_err(error)?
+                .is_some_and(|s| s.as_name().is_ok_and(|n| n == b"GoTo"));
+            let mut copied = self.target.new_dict().map_err(error)?;
+            for entry in value.dict_iter().map_err(error)? {
+                let (key, item) = entry.map_err(error)?;
+                let name = String::from_utf8(key.as_name().map_err(error)?).map_err(error)?;
+                if name == "AA" && (annotation || field) {
+                    return Err(
+                        "Additional actions in imported forms or annotations are not supported"
+                            .into(),
+                    );
+                }
+                if name == "A" && (annotation || field) {
+                    validate_action(&item, 0)?;
+                }
+                if (name == "Dest" && annotation) || (name == "D" && goto) {
+                    let destination = self.destination(&item, depth + 1)?;
+                    copied.dict_put(name.as_str(), destination).map_err(error)?;
+                    continue;
+                }
+                copied
+                    .dict_put(name.as_str(), self.copy(&item, depth + 1)?)
+                    .map_err(error)?;
+            }
+            return Ok(copied);
+        }
+        self.target.graft_object(value).map_err(error)
+    }
+}
+fn validate_action(action: &PdfObject, depth: usize) -> Result<(), String> {
+    if depth > 64 {
+        return Err("Imported action chain exceeds limits".into());
+    }
+    if !action.is_dict().map_err(error)? {
+        return Err("Imported action is malformed or chained as an array".into());
+    }
+    let kind = action
+        .get_dict("S")
+        .map_err(error)?
+        .ok_or("Imported action has no subtype")?
+        .as_name()
+        .map_err(error)?;
+    if !matches!(kind.as_slice(), b"URI" | b"GoTo") {
+        return Err(
+            "Imported action is unsupported; only URI and GoTo actions are preserved".into(),
+        );
+    }
+    if let Some(next) = action.get_dict("Next").map_err(error)? {
+        validate_action(&next, depth + 1)?;
+    }
+    Ok(())
+}
+fn named_destinations(source: &PdfDocument) -> Result<HashMap<String, PdfObject>, String> {
+    let root = source
+        .trailer()
+        .map_err(error)?
+        .get_dict("Root")
+        .map_err(error)?
+        .ok_or("Missing source catalog")?;
+    let mut result = HashMap::new();
+    if let Some(legacy) = root.get_dict("Dests").map_err(error)? {
+        if legacy.dict_len().map_err(error)? > 100_000 {
+            return Err("Legacy destination dictionary exceeds limits".into());
+        }
+        for entry in legacy.dict_iter().map_err(error)? {
+            let (key, value) = entry.map_err(error)?;
+            result.insert(
+                String::from_utf8(key.as_name().map_err(error)?).map_err(error)?,
+                value,
+            );
+        }
+    }
+    let mut pending = Vec::new();
+    if let Some(tree) = root
+        .get_dict("Names")
+        .map_err(error)?
+        .and_then(|n| n.get_dict("Dests").ok().flatten())
+    {
+        pending.push((tree, 0));
+    }
+    let mut nodes = 0;
+    while let Some((node, depth)) = pending.pop() {
+        nodes += 1;
+        if nodes > 10000 || depth > 64 || result.len() > 100000 {
+            return Err("Destination name tree exceeds limits".into());
+        }
+        if let Some(names) = node.get_dict("Names").map_err(error)? {
+            let count = names.len().map_err(error)?;
+            if count % 2 != 0 || count > 200000 {
+                return Err("Malformed destination name tree".into());
+            }
+            for index in (0..count).step_by(2) {
+                let key = names
+                    .get_array(index as i32)
+                    .map_err(error)?
+                    .ok_or("Missing destination name")?
+                    .as_string()
+                    .map_err(error)?;
+                let value = names
+                    .get_array(index as i32 + 1)
+                    .map_err(error)?
+                    .ok_or("Missing named destination")?;
+                result.insert(key, value);
+            }
+        }
+        if let Some(kids) = node.get_dict("Kids").map_err(error)? {
+            if kids.len().map_err(error)? > 10000 {
+                return Err("Destination tree fanout exceeds limits".into());
+            }
+            for kid in kids.array_iter().map_err(error)? {
+                pending.push((kid.map_err(error)?, depth + 1));
+            }
+        }
+    }
+    Ok(result)
+}
+fn import_interactivity(
+    target: &mut PdfDocument,
+    source: &PdfDocument,
+    start: usize,
+) -> Result<(), String> {
+    let pages = source.page_count().map_err(error)? as usize;
+    let mut objects = HashMap::new();
+    for p in 0..pages {
+        let original = source.find_page(p as i32).map_err(error)?;
+        objects.insert(
+            original.as_indirect().map_err(error)?,
+            target.find_page((start + p) as i32).map_err(error)?,
+        );
+    }
+    let page_refs = objects.keys().copied().collect();
+    let mut graph = ImportGraph {
+        target,
+        objects,
+        nodes: 0,
+        page_refs,
+        stream_bytes: 0,
+        named: named_destinations(source)?,
+        start,
+        pages,
+    };
+    for p in 0..pages {
+        let original = source.find_page(p as i32).map_err(error)?;
+        if let Some(annots) = original.get_dict("Annots").map_err(error)? {
+            if !annots.is_array().map_err(error)? || annots.len().map_err(error)? > 2000 {
+                return Err("Imported page annotation array is invalid or too large".into());
+            }
+            for annot in annots.array_iter().map_err(error)? {
+                let annot = annot.map_err(error)?;
+                if !annot.is_dict().map_err(error)? {
+                    return Err("Malformed imported annotation dictionary".into());
+                }
+                if let Some(action) = annot.get_dict("A").map_err(error)? {
+                    validate_action(&action, 0)?;
+                }
+                if annot.get_dict("AA").map_err(error)?.is_some() {
+                    return Err("Additional annotation actions are unsupported".into());
+                }
+            }
+            let copied = graph.copy(&annots, 0)?;
+            let mut page = graph.target.find_page((start + p) as i32).map_err(error)?;
+            page.dict_put("Annots", copied).map_err(error)?;
+        }
+    }
+    let root = source
+        .trailer()
+        .map_err(error)?
+        .get_dict("Root")
+        .map_err(error)?
+        .ok_or("Missing imported catalog")?;
+    if let Some(form) = root.get_dict("AcroForm").map_err(error)? {
+        if form.get_dict("XFA").map_err(error)?.is_some() {
+            return Err("XFA forms cannot be merged yet".into());
+        }
+        let copied = graph.copy(&form, 0)?;
+        let mut target_root = graph
+            .target
+            .trailer()
+            .map_err(error)?
+            .get_dict("Root")
+            .map_err(error)?
+            .ok_or("Missing target catalog")?;
+        let mut target_form = match target_root.get_dict("AcroForm").map_err(error)? {
+            Some(form) => form,
+            None => graph.target.new_dict().map_err(error)?,
+        };
+        if target_form.get_dict("XFA").map_err(error)?.is_some() {
+            return Err("Cannot merge fields into an XFA form".into());
+        }
+        let mut fields = target_form
+            .get_dict("Fields")
+            .map_err(error)?
+            .unwrap_or(graph.target.new_array().map_err(error)?);
+        // A namespace parent preserves each source's inherited DA/DR resources and
+        // keeps duplicate field names from becoming coupled across imported files.
+        let mut parent = graph.target.new_dict().map_err(error)?;
+        parent
+            .dict_put(
+                "T",
+                graph
+                    .target
+                    .new_string(&format!(
+                        "PDFree_import_{}_{}",
+                        start + 1,
+                        graph.target.xref_len().map_err(error)?
+                    ))
+                    .map_err(error)?,
+            )
+            .map_err(error)?;
+        for name in ["DA", "Q"] {
+            if let Some(value) = copied.get_dict(name).map_err(error)? {
+                parent.dict_put(name, value).map_err(error)?;
+            }
+        }
+        if let Some(resources) = copied.get_dict("DR").map_err(error)? {
+            let mut target_resources = target_form
+                .get_dict("DR")
+                .map_err(error)?
+                .unwrap_or(graph.target.new_dict().map_err(error)?);
+            for entry in resources.dict_iter().map_err(error)? {
+                let (category, incoming) = entry.map_err(error)?;
+                let category =
+                    String::from_utf8(category.as_name().map_err(error)?).map_err(error)?;
+                let mut existing = target_resources
+                    .get_dict(category.as_str())
+                    .map_err(error)?
+                    .unwrap_or(graph.target.new_dict().map_err(error)?);
+                for entry in incoming.dict_iter().map_err(error)? {
+                    let (name, value) = entry.map_err(error)?;
+                    let name = String::from_utf8(name.as_name().map_err(error)?).map_err(error)?;
+                    if existing.get_dict(name.as_str()).map_err(error)?.is_some() {
+                        return Err("Imported form resource names conflict with existing forms; merge cancelled".into());
+                    }
+                    existing.dict_put(name.as_str(), value).map_err(error)?;
+                }
+                target_resources
+                    .dict_put(category.as_str(), existing)
+                    .map_err(error)?;
+            }
+            target_form
+                .dict_put("DR", target_resources)
+                .map_err(error)?;
+        }
+        let kids = copied
+            .get_dict("Fields")
+            .map_err(error)?
+            .ok_or("Imported form has no Fields array")?;
+        if !kids.is_array().map_err(error)? {
+            return Err("Invalid imported form fields".into());
+        }
+        parent
+            .dict_put("Kids", kids.try_clone().map_err(error)?)
+            .map_err(error)?;
+        let parent = graph.target.add_object(&parent).map_err(error)?;
+        for kid in kids.array_iter().map_err(error)? {
+            kid.map_err(error)?
+                .dict_put("Parent", parent.try_clone().map_err(error)?)
+                .map_err(error)?;
+        }
+        fields.array_push(parent).map_err(error)?;
+        target_form.dict_put("Fields", fields).map_err(error)?;
+        if let Some(need) = copied.get_dict("NeedAppearances").map_err(error)?
+            && need.as_bool().map_err(error)?
+        {
+            target_form
+                .dict_put("NeedAppearances", need)
+                .map_err(error)?;
+        }
+        // Calculation order entails form execution; do not silently preserve a
+        // partial calculation tree that this offline viewer cannot execute.
+        if copied.get_dict("CO").map_err(error)?.is_some() {
+            return Err("Forms with calculation order cannot be merged yet".into());
+        }
+        target_root
+            .dict_put("AcroForm", target_form)
+            .map_err(error)?;
     }
     Ok(())
 }
@@ -565,6 +979,105 @@ pub(crate) fn split(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resource_names_are_not_actions_but_annotation_action_chains_are_validated() {
+        let mut target = PdfDocument::new();
+        let mut graph = ImportGraph {
+            target: &mut target,
+            objects: HashMap::new(),
+            nodes: 0,
+            named: HashMap::new(),
+            start: 0,
+            pages: 0,
+            page_refs: HashSet::new(),
+            stream_bytes: 0,
+        };
+        let resources = graph.target.new_object_from_str("<< /Font << /A << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> /Next << /Type /Font /Subtype /Type1 /BaseFont /Courier >> >> /CharProcs << /A << >> /AA << >> >> >>").unwrap();
+        assert!(graph.copy(&resources, 0).is_ok());
+        let unsupported = graph.target.new_object_from_str("<< /Type /Annot /Subtype /Link /A << /S /URI /URI (https://example.com) /Next << /S /JavaScript /JS (blocked) >> >> >>").unwrap();
+        assert!(
+            graph
+                .copy(&unsupported, 0)
+                .unwrap_err()
+                .contains("unsupported")
+        );
+        let malformed = graph
+            .target
+            .new_object_from_str("<< /Subtype /Widget /FT /Tx /A << /S /URI /Next [] >> >>")
+            .unwrap();
+        assert!(graph.copy(&malformed, 0).unwrap_err().contains("malformed"));
+    }
+
+    #[test]
+    fn cyclic_named_destinations_and_foreign_page_trees_fail_with_bounded_work() {
+        let mut target = PdfDocument::new();
+        target.new_page((300., 400.)).unwrap();
+        let mut graph = ImportGraph {
+            target: &mut target,
+            objects: HashMap::new(),
+            nodes: 0,
+            named: HashMap::from([("cycle".into(), PdfObject::new_name("cycle").unwrap())]),
+            start: 0,
+            pages: 1,
+            page_refs: HashSet::new(),
+            stream_bytes: 0,
+        };
+        assert!(
+            graph
+                .destination(&PdfObject::new_name("cycle").unwrap(), 0)
+                .unwrap_err()
+                .contains("nesting")
+        );
+        let foreign = graph
+            .target
+            .new_object_from_str("<< /Type /Page >>")
+            .unwrap();
+        assert!(
+            graph
+                .copy(&foreign, 0)
+                .unwrap_err()
+                .contains("foreign page tree")
+        );
+        let invalid = graph.target.new_object_from_str("[null /Fit]").unwrap();
+        assert!(graph.destination(&invalid, 0).is_err());
+    }
+
+    #[test]
+    fn existing_indirect_destinations_follow_page_moves_and_insertion() {
+        let mut doc = PdfDocument::new();
+        doc.new_page((300., 400.)).unwrap();
+        doc.new_page((300., 400.)).unwrap();
+        let mut link = doc.new_dict().unwrap();
+        let mut dest = doc.new_array().unwrap();
+        dest.array_push(doc.find_page(1).unwrap()).unwrap();
+        dest.array_push(doc.new_name("Fit").unwrap()).unwrap();
+        link.dict_put("Dest", dest).unwrap();
+        let mut annots = doc.new_array().unwrap();
+        annots.array_push(link).unwrap();
+        doc.find_page(0)
+            .unwrap()
+            .dict_put("Annots", annots)
+            .unwrap();
+        mutate(&mut doc, &EditCommand::Move { page: 1, to: 0 }).unwrap();
+        mutate(&mut doc, &EditCommand::Blank { at: 0 }).unwrap();
+        let destination = doc
+            .find_page(2)
+            .unwrap()
+            .get_dict("Annots")
+            .unwrap()
+            .unwrap()
+            .get_array(0)
+            .unwrap()
+            .unwrap()
+            .get_dict("Dest")
+            .unwrap()
+            .unwrap()
+            .get_array(0)
+            .unwrap()
+            .unwrap();
+        assert_eq!(doc.lookup_page_number(&destination).unwrap(), 1);
+    }
 
     #[test]
     fn blank_inherits_preceding_page_dimensions_in_mixed_documents() {
