@@ -11,6 +11,15 @@ use std::{cell::RefCell, path::PathBuf, rc::Rc, time::Duration};
 slint::include_modules!();
 
 enum DialogResult {
+    Certificate {
+        document: u64,
+        certificate: Option<PathBuf>,
+        target: Option<PathBuf>,
+    },
+    SignatureImage {
+        document: u64,
+        path: Option<PathBuf>,
+    },
     Open(Option<PathBuf>),
     Save {
         document: u64,
@@ -74,7 +83,53 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let Some(ui) = action_ui.upgrade() else {
             return;
         };
-        if action == "open" {
+        if action == "certificate-select" {
+            if action_state.borrow().dialog_open
+                || !action_state.borrow().certificate_can_import(&ui)
+            {
+                return;
+            }
+            let document = action_state.borrow().document;
+            action_state.borrow_mut().dialog_open = true;
+            let send = dialog_send.clone();
+            std::thread::spawn(move || {
+                let certificate = rfd::FileDialog::new()
+                    .set_title("Choose signing certificate")
+                    .add_filter("PKCS#12 certificate", &["pfx", "p12"])
+                    .pick_file();
+                let target = if certificate.is_some() {
+                    rfd::FileDialog::new()
+                        .set_title("Save signed PDF as a new file")
+                        .add_filter("PDF document", &["pdf"])
+                        .set_file_name("signed.pdf")
+                        .save_file()
+                } else {
+                    None
+                };
+                let _ = send.send(DialogResult::Certificate {
+                    document,
+                    certificate,
+                    target,
+                });
+            });
+        } else if action == "signature-import" {
+            if action_state.borrow().dialog_open
+                || ui.get_file_busy()
+                || !action_state.borrow().signature_can_import()
+            {
+                return;
+            }
+            let document = action_state.borrow().document;
+            action_state.borrow_mut().dialog_open = true;
+            let send = dialog_send.clone();
+            std::thread::spawn(move || {
+                let path = rfd::FileDialog::new()
+                    .set_title("Import visual signature")
+                    .add_filter("Signature image", &["png", "jpg", "jpeg"])
+                    .pick_file();
+                let _ = send.send(DialogResult::SignatureImage { document, path });
+            });
+        } else if action == "open" {
             if action_state.borrow().dialog_open
                 || ui.get_file_busy()
                 || ui.get_rename_active()
@@ -127,6 +182,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
     let pointer_state = state.clone();
+    let signature_state = state.clone();
+    let signature_ui = ui.as_weak();
+    ui.on_signature_pointer(move |x, y, phase| {
+        if let Some(ui) = signature_ui.upgrade() {
+            signature_state
+                .borrow_mut()
+                .signature_pointer(&ui, x, y, phase);
+        }
+    });
+    let form_state = state.clone();
+    let form_ui = ui.as_weak();
+    ui.on_form_select(move |index| {
+        if let Some(ui) = form_ui.upgrade() {
+            form_state.borrow_mut().form_select(&ui, index);
+        }
+    });
+    let form_state = state.clone();
+    let form_ui = ui.as_weak();
+    ui.on_form_option(move |index, selected| {
+        if let Some(ui) = form_ui.upgrade() {
+            form_state.borrow_mut().form_option(&ui, index, selected);
+        }
+    });
+    let form_state = state.clone();
+    let form_ui = ui.as_weak();
+    ui.on_form_drag(move |index, x, y, phase, resize| {
+        if let Some(ui) = form_ui.upgrade() {
+            form_state
+                .borrow_mut()
+                .form_drag(&ui, index, x, y, phase, resize);
+        }
+    });
     let pointer_ui = ui.as_weak();
     ui.on_reader_pointer(move |x, y, phase| {
         if let Some(ui) = pointer_ui.upgrade() {
@@ -249,6 +336,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Ok(result) = dialog_receive.try_recv() {
                 state.dialog_open = false;
                 match result {
+                    DialogResult::Certificate {
+                        document,
+                        certificate,
+                        target,
+                    } => state.certificate_dialog_result(&ui, document, certificate, target),
+                    DialogResult::SignatureImage { document, path } => {
+                        state.signature_image_result(&ui, document, path)
+                    }
                     DialogResult::Open(Some(path)) => state.request_open(&ui, path),
                     DialogResult::Open(None) => {}
                     DialogResult::Save { document, path } => {

@@ -34,7 +34,7 @@ pub(crate) fn apply(doc: &PdfDocument, annotations: &[Annotation]) -> Result<(),
     if annotations.len() > 2_000 {
         return Err("Too many annotations (maximum 2,000)".into());
     }
-    if !annotations.is_empty() && !doc.permissions().contains(Permission::ANNOTATE) {
+    if !annotations.is_empty() && !crate::forms::permissions(doc).contains(Permission::ANNOTATE) {
         return Err("This PDF does not permit annotations".into());
     }
     let count = doc.page_count().map_err(|e| e.to_string())? as usize;
@@ -154,6 +154,7 @@ pub(crate) fn prepare_rename(
     annotations: &[Annotation],
     current: impl Fn() -> bool,
 ) -> Result<PreparedRename, String> {
+    crate::forms::ensure_writable(doc)?;
     if !fs::symlink_metadata(source)
         .map_err(|e| e.to_string())?
         .file_type()
@@ -360,13 +361,14 @@ pub(crate) fn save(
     annotations: &[Annotation],
     current: impl Fn() -> bool,
 ) -> Result<PathBuf, String> {
+    crate::forms::ensure_writable(doc)?;
     if annotations.len() > 2_000 {
         return Err("Too many annotations (maximum 2,000)".into());
     }
     for annotation in annotations {
         annotation.validate()?;
     }
-    if !annotations.is_empty() && !doc.permissions().contains(Permission::ANNOTATE) {
+    if !annotations.is_empty() && !crate::forms::permissions(doc).contains(Permission::ANNOTATE) {
         return Err("This PDF does not permit annotations".into());
     }
     let name = target
@@ -415,6 +417,7 @@ pub(crate) fn save(
     drop(file);
     drop(copy);
     let verified = open(&temporary.0, password)?;
+    crate::forms::verify(doc, &verified)?;
     if verified.page_count().map_err(|e| e.to_string())?
         != doc.page_count().map_err(|e| e.to_string())?
     {

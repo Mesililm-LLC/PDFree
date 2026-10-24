@@ -1,10 +1,29 @@
-param([string]$Destination = 'dist/PDFree', [string]$Executable = 'target/release/pdfree.exe')
+param([string]$Destination = 'dist/PDFree', [string]$Executable = 'target/release/pdfree.exe', [string]$OcrSource = '')
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $root
 $destinationPath = [IO.Path]::GetFullPath((Join-Path $root $Destination))
 if (!$destinationPath.StartsWith($root + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw 'Package destination must be inside this workspace.' }
 $null = New-Item -ItemType Directory -Force -Path $destinationPath
+if (!$OcrSource) { $OcrSource = Join-Path $root '.tools/forms/ocr' }
+$formsLock = Get-Content -LiteralPath (Join-Path $root 'assets/forms-tools.lock.json') -Raw | ConvertFrom-Json
+if (!(Test-Path -LiteralPath (Join-Path $OcrSource 'tesseract.exe'))) { throw 'Run scripts/bootstrap-forms-tools.ps1 or provide -OcrSource before packaging.' }
+if ((Get-FileHash -LiteralPath (Join-Path $OcrSource 'tessdata/eng.traineddata') -Algorithm SHA256).Hash -ne $formsLock.english.sha256) { throw 'The English OCR model does not match the resource lock.' }
+$ocrDestination = Join-Path $destinationPath 'ocr'
+$null = New-Item -ItemType Directory -Force -Path (Join-Path $ocrDestination 'tessdata')
+foreach ($resource in $formsLock.runtime_files.PSObject.Properties) {
+    $source = Join-Path $OcrSource $resource.Name
+    if ((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $resource.Value) { throw "OCR runtime checksum mismatch: $($resource.Name)" }
+    $target = Join-Path $ocrDestination $resource.Name
+    $null = New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target)
+    Copy-Item -LiteralPath $source -Destination $target
+}
+Copy-Item -LiteralPath (Join-Path $OcrSource 'tessdata/eng.traineddata') -Destination (Join-Path $ocrDestination 'tessdata')
+Copy-Item -LiteralPath (Join-Path $OcrSource 'doc') -Destination (Join-Path $ocrDestination 'licenses') -Recurse -Force
+Copy-Item -LiteralPath (Join-Path $root 'assets/forms-tools.lock.json') -Destination $ocrDestination
+$fontLicenses = Join-Path $destinationPath 'licenses/Caveat'
+$null = New-Item -ItemType Directory -Force -Path $fontLicenses
+Copy-Item -LiteralPath (Join-Path $root 'assets/signatures/OFL.txt') -Destination $fontLicenses
 Copy-Item -LiteralPath $Executable -Destination (Join-Path $destinationPath 'pdfree.exe')
 foreach ($file in @('README.md','LICENSE','THIRD_PARTY_NOTICES.md','Cargo.lock')) { Copy-Item -LiteralPath $file -Destination $destinationPath }
 Copy-Item -LiteralPath 'docs' -Destination $destinationPath -Recurse -Force

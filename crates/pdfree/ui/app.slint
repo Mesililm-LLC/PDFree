@@ -1,4 +1,5 @@
-import { Button, LineEdit, TextEdit, ScrollView, Spinner, Palette, ComboBox } from "std-widgets.slint";
+import { Button, LineEdit, TextEdit, ScrollView, Spinner, Palette, ComboBox, CheckBox } from "std-widgets.slint";
+import "../../../assets/signatures/Caveat.ttf";
 
 export struct PageSurface { x: float, y: float, w: float, h: float, number: int }
 export struct TileSurface { pixels: image, x: float, y: float, w: float, h: float }
@@ -7,6 +8,8 @@ export struct ThumbnailSurface { number: int, pixels: image }
 export struct AnnotationSurface { x: float, y: float, w: float, h: float, kind: int, label: string, index: int }
 export struct BookmarkItem { index: int, title: string }
 export struct AnnotationItem { index: int, label: string, editable: bool }
+export struct FormSurface { index: int, x: float, y: float, w: float, h: float, label: string, selected: bool, review: bool }
+export struct FormOption { label: string, selected: bool }
 
 export component AppWindow inherits Window {
     init => { Palette.color-scheme = ColorScheme.light; }
@@ -26,6 +29,55 @@ export component AppWindow inherits Window {
     in-out property <bool> can-copy: false;
     in-out property <bool> can-annotate: false;
     in-out property <bool> can-assemble: false;
+    in-out property <bool> can-form: false;
+    in-out property <bool> can-edit-forms: false;
+    in-out property <int> form-mode: 0;
+    in-out property <bool> form-draw: false;
+    in-out property <bool> form-signable: false;
+    in-out property <bool> form-selected: false;
+    in-out property <bool> form-editable: false;
+    in-out property <bool> form-authorable: false;
+    in-out property <int> form-kind: 0;
+    in-out property <int> form-value-kind: 0;
+    in-out property <bool> form-draft-visible: false;
+    in-out property <float> form-draft-x;
+    in-out property <float> form-draft-y;
+    in-out property <float> form-draft-w;
+    in-out property <float> form-draft-h;
+    in-out property <string> form-label;
+    in-out property <string> form-name;
+    in-out property <string> form-value;
+    in-out property <bool> form-password: false;
+    in-out property <bool> form-checked: false;
+    in-out property <bool> form-required: false;
+    in-out property <bool> form-readonly: false;
+    in-out property <string> form-options-text;
+    in-out property <string> form-group;
+    in-out property <string> form-date: "YYYY-MM-DD";
+    in-out property <string> form-decimals: "2";
+    in-out property <string> form-status;
+    in-out property <int> form-choice: -1;
+    in-out property <[string]> form-choice-labels;
+    in property <[FormOption]> form-options;
+    in property <[FormSurface]> form-surfaces;
+    in-out property <string> form-scan-pages;
+    in-out property <int> form-scan-scope: 0;
+    in-out property <bool> form-detecting: false;
+    in-out property <bool> signature-visible: false;
+    in-out property <int> signature-mode: 0;
+    in-out property <string> signature-text;
+    in-out property <image> signature-preview;
+    callback signature-pointer(float,float,int);
+    in-out property <bool> digital-visible: false;
+    in-out property <bool> digital-signing: false;
+    in-out property <string> digital-password;
+    in-out property <string> digital-target;
+    in-out property <bool> document-signed: false;
+    callback form-select(int);
+    callback form-option(int,bool);
+    callback form-drag(int,float,float,int,bool);
+    in-out property <int> form-focus: 0;
+    in-out property <int> form-blur: 0;
     in-out property <bool> page-tools-visible: false;
     in-out property <string> page-range;
     in-out property <string> move-to;
@@ -112,9 +164,12 @@ export component AppWindow inherits Window {
     forward-focus: keys;
     keys := FocusScope {
         key-pressed(event) => {
-            if root.pending-open || root.note-visible || root.page-tools-visible || root.annotation-list-visible || root.highlight-visible {
+            if root.form-mode>0 && !root.signature-visible && !root.digital-visible && event.text==Key.Tab { root.action(event.modifiers.shift ? "form-previous" : "form-next"); return accept; }
+            if root.pending-open || root.note-visible || root.page-tools-visible || root.annotation-list-visible || root.highlight-visible || root.signature-visible || root.digital-visible {
                 if event.text == Key.Escape {
-                    if root.pending-open { root.action("pending-cancel"); }
+                    if root.digital-visible { root.action("form-digital-cancel"); }
+                    else if root.signature-visible { root.action("form-sign-cancel"); }
+                    else if root.pending-open { root.action("pending-cancel"); }
                     else if root.note-visible { root.action("cancel-note"); }
                     else if root.page-tools-visible { root.action("close-page-tools"); }
                     else if root.annotation-list-visible { root.action("close-annotations"); }
@@ -180,6 +235,7 @@ export component AppWindow inherits Window {
                     padding-left: 16px; padding-right: 16px; padding-top: 5px; padding-bottom: 5px; spacing: 8px;
                     Button { text: "Highlight"; enabled: root.can-annotate && root.selection-single-page && root.selection-text != "" && !root.file-busy; clicked => { root.action("annotate-highlight"); } }
                     Button { text: root.note-placement ? "Cancel note" : "Add note"; enabled: root.can-annotate && !root.file-busy; clicked => { if root.note-placement { root.action("cancel-note"); } else { root.action("annotate-note"); } } }
+                    ComboBox { width: 135px; model: ["Reader", "Fill Form", "Prepare Form"]; current-index: root.form-mode; enabled: root.ready && !root.file-busy; selected(value) => { root.action(self.current-index==2 ? "form-prepare" : self.current-index==1 ? "form-fill" : "form-close"); } }
                     Button { text: "Undo"; enabled: root.can-undo && !root.file-busy; clicked => { root.action("undo"); } }
                     Button { text: "Redo"; enabled: root.can-redo && !root.file-busy; clicked => { root.action("redo"); } }
                     Rectangle { horizontal-stretch: 1; }
@@ -288,6 +344,75 @@ export component AppWindow inherits Window {
                         }
                     }
                 }
+                if root.form-mode>0 && root.ready: Rectangle {
+                    width: 300px; background: #f8fafc;
+                    ScrollView { width: 100%; height: 100%;
+                    VerticalLayout {
+                        padding: 12px; spacing: 8px;
+                        Text { text: root.form-mode==2 ? "Prepare Form" : "Fill Form"; font-size: 20px; font-weight: 700; color: #223b54; }
+                        Text { text: root.form-status; wrap: word-wrap; color: #526171; }
+                        HorizontalLayout {
+                            Button { text: "Previous"; enabled: !root.file-busy; clicked => { root.action("form-previous"); } }
+                            Button { text: "Next"; enabled: !root.file-busy; clicked => { root.action("form-next"); } }
+                            Button { text: "Close"; enabled: !root.file-busy; clicked => { root.action("form-close"); } }
+                        }
+                        if root.form-mode==2: VerticalLayout {
+                            Text { text: "Field type"; color: #526171; }
+                            ComboBox { model: ["Text", "Multiline text", "Date", "Number", "Checkbox", "Radio button", "Dropdown", "List", "Visual signature", "Digital signature"]; current-index <=> root.form-kind; enabled: !root.file-busy; }
+                            Button { text: root.form-draw ? "Drawing — drag on page" : "Draw a new field"; enabled: root.can-edit-forms && !root.file-busy; clicked => { root.action("form-new"); } }
+                            Text { text: "Label"; color: #526171; }
+                            LineEdit { text <=> root.form-label; enabled: !root.file-busy; }
+                            CheckBox { text: "Required"; checked <=> root.form-required; }
+                            CheckBox { text: "Read only"; checked <=> root.form-readonly; }
+                            if root.form-kind==2: ComboBox { model: ["YYYY-MM-DD", "MM/DD/YYYY", "DD/MM/YYYY"]; current-value <=> root.form-date; }
+                            if root.form-kind==3: LineEdit { text <=> root.form-decimals; placeholder-text: "Decimal places (0–12)"; }
+                            if root.form-kind==5: LineEdit { text <=> root.form-group; placeholder-text: "Radio group name"; }
+                            if root.form-kind==6 || root.form-kind==7: TextEdit { height: 80px; text <=> root.form-options-text; }
+                            if root.form-selected: HorizontalLayout {
+                                Button { text: "Apply properties"; enabled: root.form-authorable && !root.file-busy; clicked => { root.action("form-properties"); } }
+                                Button { text: "Duplicate"; enabled: root.form-authorable && !root.file-busy; clicked => { root.action("form-duplicate"); } }
+                            }
+                            if root.form-selected: HorizontalLayout {
+                                Button { text: "Delete"; enabled: root.form-authorable && !root.file-busy; clicked => { root.action("form-delete"); } }
+                                Button { text: "Confirm field"; enabled: root.form-authorable && !root.file-busy; clicked => { root.action("form-confirm"); } }
+                            }
+                            ComboBox { model: ["Current page", "Selected pages", "Whole document"]; current-index <=> root.form-scan-scope; enabled: !root.file-busy; }
+                            if root.form-scan-scope==1: LineEdit { text <=> root.form-scan-pages; placeholder-text: "Pages, e.g. 1-3"; enabled: !root.file-busy; }
+                            HorizontalLayout {
+                                Button { text: "Detect Fields"; enabled: !root.file-busy; clicked => { root.action("form-detect"); } }
+                                Button { text: "Review uncertain"; enabled: !root.file-busy; clicked => { root.action("form-review"); } }
+                            }
+                            if root.form-detecting: Button { text: "Cancel detection"; clicked => {root.action("form-cancel-detection");} }
+                        }
+                        if root.form-selected: VerticalLayout {
+                            Text { text: root.form-name; wrap: word-wrap; font-weight: 600; color: #223b54; }
+                            form-value-edit := LineEdit {
+                                property <int> focus-sequence: root.form-focus;
+                                changed focus-sequence => { if root.form-selected && root.form-value-kind<=3 {self.focus();} }
+                                visible: root.form-value-kind<=3 && (root.form-value-kind!=1 || root.form-password);
+                                input-type: root.form-password ? InputType.password : InputType.text;
+                                text <=> root.form-value; enabled: root.form-editable && !root.file-busy;
+                                accepted => { root.action("form-commit"); }
+                                changed has-focus => { if !self.has-focus { root.form-blur += 1; } }
+                                key-pressed(event) => { if event.text==Key.Tab {root.action(event.modifiers.shift ? "form-previous" : "form-next");return accept;}return reject; }
+                            }
+                            if root.form-value-kind==1 && !root.form-password: TextEdit { height: 110px; text <=> root.form-value; enabled: root.form-editable && !root.file-busy; changed has-focus => {if !self.has-focus {root.form-blur+=1;}} }
+                            if root.form-value-kind==4 || root.form-value-kind==5: CheckBox { text: "Selected"; checked <=> root.form-checked; enabled: root.form-editable && !root.file-busy; toggled => { root.action("form-toggle"); } }
+                            if root.form-value-kind==6: ComboBox { model: root.form-choice-labels; current-index <=> root.form-choice; enabled: root.form-editable && !root.file-busy; selected(value) => { root.action("form-choice"); } }
+                            if root.form-value-kind==7: VerticalLayout { for option[index] in root.form-options: CheckBox { text: option.label; checked: option.selected; enabled: root.form-editable && !root.file-busy; toggled => {root.form-option(index,self.checked);} } }
+                            if root.form-value-kind<=3: Button { text: "Apply value"; enabled: root.form-editable && !root.file-busy; clicked => { root.action("form-commit"); } }
+                            if root.form-value-kind==8: VerticalLayout {
+                                Button { text: "Type visual signature"; enabled: root.form-editable && !root.file-busy; clicked => {root.action("form-sign-type");} }
+                                Button { text: "Draw visual signature"; enabled: root.form-editable && !root.file-busy; clicked => {root.action("form-sign-draw");} }
+                                Button { text: "Import signature image"; enabled: root.form-editable && !root.file-busy; clicked => {root.action("signature-import");} }
+                                Button { text: "Clear visual signature"; enabled: root.form-editable && !root.file-busy; clicked => {root.action("form-sign-clear");} }
+                            }
+                            if root.form-value-kind==9: Button { text: "Sign with certificate…"; enabled: root.form-signable && !root.file-busy; clicked => {root.action("certificate-select");} }
+                            if root.digital-signing: Button { text: "Cancel signing"; clicked => {root.action("form-digital-stop");} }
+                        }
+                    }
+                    }
+                }
                 viewport := Rectangle {
                 background: #e6ebf1;
                 horizontal-stretch: 1;
@@ -331,7 +456,7 @@ export component AppWindow inherits Window {
                         property <float> start-y;
                         property <bool> dragged: false;
                         clicked => { if !self.dragged && !root.note-placement { root.reader-click(self.mouse-x / 1px,self.mouse-y / 1px); } }
-                        mouse-cursor: root.note-placement ? crosshair : root.link-hover ? pointer : text;
+                        mouse-cursor: root.note-placement || (root.form-mode==2 && root.form-draw) ? crosshair : root.link-hover ? pointer : text;
                         pointer-event(event) => {
                             if event.kind == PointerEventKind.cancel { root.reader-pointer(0,0,3); }
                             if event.button == PointerEventButton.left {
@@ -364,6 +489,30 @@ export component AppWindow inherits Window {
                             clicked => { root.annotation-click(annotation.index); }
                         }
                     }
+                    for field in root.form-surfaces: Rectangle {
+                        visible: root.form-mode>0;
+                        x: field.x * 1px; y: field.y * 1px; width: field.w * 1px; height: field.h * 1px;
+                        border-width: field.selected ? 2px : 1px;
+                        border-color: field.review ? #d68c00 : #1671ca;
+                        background: field.selected ? #469ef325 : #469ef310;
+                        TouchArea {
+                            mouse-cursor: root.form-mode==2 ? move : pointer;
+                            clicked => { root.form-select(field.index); }
+                            pointer-event(event) => { if event.button==PointerEventButton.left {
+                                if event.kind==PointerEventKind.down {root.form-drag(field.index,self.mouse-x / 1px+field.x,self.mouse-y / 1px+field.y,0,false);}
+                                if event.kind==PointerEventKind.up {root.form-drag(field.index,self.mouse-x / 1px+field.x,self.mouse-y / 1px+field.y,2,false);}
+                            } }
+                            moved => {if self.pressed {root.form-drag(field.index,self.mouse-x / 1px+field.x,self.mouse-y / 1px+field.y,1,false);} }
+                        }
+                        if root.form-mode==2 && field.selected: Rectangle {
+                            x: parent.width - 9px; y: parent.height - 9px; width: 9px; height: 9px; background: #1671ca;
+                            TouchArea { mouse-cursor: nwse-resize;
+                                pointer-event(event) => {if event.button==PointerEventButton.left {if event.kind==PointerEventKind.down {root.form-drag(field.index,self.mouse-x / 1px+field.x+field.w - 9,self.mouse-y / 1px+field.y+field.h - 9,0,true);} if event.kind==PointerEventKind.up {root.form-drag(field.index,self.mouse-x / 1px+field.x+field.w - 9,self.mouse-y / 1px+field.y+field.h - 9,2,true);}}}
+                                moved => {if self.pressed {root.form-drag(field.index,self.mouse-x / 1px+field.x+field.w - 9,self.mouse-y / 1px+field.y+field.h - 9,1,true);}}
+                            }
+                        }
+                    }
+                    Rectangle { visible: root.form-draft-visible; x:root.form-draft-x*1px; y:root.form-draft-y*1px; width:root.form-draft-w*1px; height:root.form-draft-h*1px; border-width:2px; border-color:#1671ca; background:#469ef325; }
                 }
                 if !root.ready: VerticalLayout {
                     alignment: center;
@@ -549,6 +698,60 @@ export component AppWindow inherits Window {
                 HorizontalLayout { alignment: end; Button { text: "Close"; clicked => { root.action("close-annotations"); } } }
             }
         }
+        }
+    }
+
+    Rectangle {
+        visible: root.signature-visible; width: 100%; height: 100%; background: #172b4d70;
+        TouchArea {}
+        Rectangle {
+            width: min(parent.width - 40px, 600px); height: 350px;
+            x: (parent.width - self.width)/2; y: (parent.height - self.height)/2;
+            background: white; border-radius: 8px;
+            VerticalLayout {
+                padding: 20px; spacing: 12px;
+                Text { text: "Visual signature"; font-size: 22px; font-weight: 700; color: #223b54; }
+                Text { text: "This places a visible mark in the PDF. Certificate signing is a separate action."; wrap: word-wrap; color: #526171; }
+                if root.signature-mode==0: LineEdit { text <=> root.signature-text; placeholder-text: "Signature text"; key-pressed(event)=>{if event.text==Key.Escape{root.action("form-sign-cancel");return accept;}return reject;} }
+                Rectangle {
+                    width: 420px; height: 140px; background: #fbfcfe; border-width: 1px; border-color: #cbd5e1;
+                    if root.signature-mode==0: Text { width: 100%; height: 100%; text: root.signature-text; font-family: "Caveat"; font-size: 48px; color: #0c2450; horizontal-alignment: center; vertical-alignment: center; overflow: elide; }
+                    if root.signature-mode!=0: Image { width: 100%; height: 100%; source: root.signature-preview; image-fit: contain; }
+                    if root.signature-mode==1: TouchArea {
+                        mouse-cursor: crosshair;
+                        pointer-event(event) => { if event.button==PointerEventButton.left {if event.kind==PointerEventKind.down {root.signature-pointer(self.mouse-x/self.width,self.mouse-y/self.height,0);} if event.kind==PointerEventKind.up {root.signature-pointer(self.mouse-x/self.width,self.mouse-y/self.height,2);}} }
+                        moved => {if self.pressed {root.signature-pointer(self.mouse-x/self.width,self.mouse-y/self.height,1);}}
+                    }
+                }
+                HorizontalLayout {
+                    Button { text: "Clear preview"; clicked => {root.action("form-sign-reset");} }
+                    Rectangle { horizontal-stretch: 1; }
+                    Button { text: "Cancel"; clicked => {root.action("form-sign-cancel");} }
+                    Button { text: "Place signature"; clicked => {root.action("form-sign-apply");} }
+                }
+            }
+        }
+    }
+
+    Rectangle {
+        visible: root.digital-visible; width: 100%; height: 100%; background: #172b4d70;
+        TouchArea {}
+        Rectangle {
+            width: min(parent.width - 40px, 540px); height: 290px;
+            x: (parent.width - self.width)/2; y: (parent.height - self.height)/2;
+            background: white; border-radius: 8px;
+            VerticalLayout {
+                padding: 20px; spacing: 14px;
+                Text { text: "Digital signature"; font-size: 22px; font-weight: 700; color: #223b54; }
+                Text { text: "Sign the saved PDF with your local certificate. The new signed output opens read-only."; wrap: word-wrap; color: #526171; }
+                Text { text: root.digital-target; wrap: word-wrap; color: #526171; }
+                LineEdit { text <=> root.digital-password; input-type: InputType.password; placeholder-text: "PKCS#12 certificate password"; key-pressed(event)=>{if event.text==Key.Escape{root.action("form-digital-cancel");return accept;}return reject;} accepted => {root.action("form-digital-apply");} }
+                Text { text: "Signature integrity will be checked. Certificate trust and revocation are not checked."; wrap: word-wrap; color: #526171; }
+                HorizontalLayout { alignment: end;
+                    Button { text: "Cancel"; clicked => {root.action("form-digital-cancel");} }
+                    Button { text: "Sign PDF"; clicked => {root.action("form-digital-apply");} }
+                }
+            }
         }
     }
 }

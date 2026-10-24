@@ -49,3 +49,17 @@ Automated software-platform tests simulate UI events; they do not certify physic
 - Drag across adjacent pages in both directions and use Ctrl+C. Drag near the viewport edge to scroll; releasing must stop scrolling. More than 16 pages should produce an explicit limit message and no partial copy.
 - Resize to 680 × 480 with Bookmarks open, then move between monitors with different scaling. Open and view controls must remain reachable; Ctrl+C works while the Copy selection button is hidden on narrow windows.
 - Merge interactive-merge.pdf into an owned blank copy, save, reopen in Edge or another independent viewer, and inspect links, note/popup, square appearance and form value. PDFree preserves imported form fields but does not fill them. Try an unsupported source and verify no partial insertion or history loss.
+
+## Forms and signatures
+
+Use generated/disposable fixtures. In Fill Form, type Unicode, tab across linked widgets and page boundaries, choose options, and toggle checkbox/radio values. Confirm one undo entry per completed text edit. Save and reopen in PDFree and an independent reader; compare values and visible appearances. Repeat with an encrypted form that permits filling but denies annotation/editing.
+
+In Prepare Form, draw every supported type. Move and resize at 25%, 125%, and 400% zoom, with rotated/cropped pages and different device scaling. Apply labels, choice options, required/read-only settings, Date/Number formats, duplicate/delete, undo/redo, and save checkpoints. Try converting an incompatible nonempty value; it must remain available until explicitly resolved or cleared. Imported complex/action-driven fields must stay fill-only/read-only.
+
+Run Detect Fields on native, scanned, and mixed pages. Check progress/cancel, page scopes, one-step undo, uncertain review navigation across pages, type/geometry correction, confirmation/deletion, and rerun preservation. Remove OCR dependencies from a disposable portable copy and confirm manual drawing still works after the explicit OCR error. Use separate labeled English fixtures to assess detection quality beyond the generated set; do not use private PDFs in automated artifacts.
+
+Create typed, drawn, and imported Visual signatures. Preview, place, resize, replace, clear, undo, save, reopen, rotate, and print. Inspect output in an independent reader. Distinguish these marks from certificate integrity. Confirm a fresh app session retains no reusable image/stroke library.
+
+With a disposable local PKCS#12 file, save edits, choose a Digital Signature field, and sign to a new output. Cancel password/pickers/signing, enter a wrong password, choose an existing target, and alter the source externally after review. Failures must preserve the source and publish no output. Independently verify untampered output and rejection after modification. Integrity status must not claim certificate trust. Signed/XFA/scripted inputs must not become editable through another tool or Save.
+
+Physical picker/keyboard cadence, mixed-monitor behavior, printing, independent-reader interactivity, and diverse real-world form layouts remain human qualification tasks. Automated callback and independent-parser/render checks retain their exact documented limits.

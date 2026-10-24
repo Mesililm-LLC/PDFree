@@ -24,6 +24,7 @@ pub(crate) fn perform(
     command: &EditCommand,
     current: impl Fn() -> bool,
 ) -> Result<(PdfDocument, usize, u64), String> {
+    crate::forms::ensure_writable(doc)?;
     if revision != journal.as_ref().map_or(0, |h| h.revision()) {
         return Err("The document changed; select the annotation or page again".into());
     }
@@ -88,13 +89,20 @@ pub(crate) fn info(doc: &PdfDocument) -> Result<DocumentInfo, String> {
         return Err("Editing supports 1–100,000 pages".into());
     }
     let bounds = doc.load_page(0).and_then(|p| p.bounds()).map_err(error)?;
-    let permissions = doc.permissions();
+    let permissions = crate::forms::permissions(doc);
+    let (signed, xfa, _) = crate::forms::security(doc).unwrap_or((true, true, true));
+    let writable = !signed && !xfa;
     Ok(DocumentInfo {
+        can_form: writable && permissions.contains(mupdf::pdf::Permission::FORM),
+        can_edit: writable
+            && permissions
+                .contains(mupdf::pdf::Permission::MODIFY | mupdf::pdf::Permission::ANNOTATE),
+        signed,
         pages: pages as usize,
         first_page: PageSize::new(bounds.width(), bounds.height()),
         can_copy: permissions.contains(mupdf::pdf::Permission::COPY),
-        can_annotate: permissions.contains(mupdf::pdf::Permission::ANNOTATE),
-        can_assemble: permissions.contains(mupdf::pdf::Permission::ASSEMBLE),
+        can_annotate: writable && permissions.contains(mupdf::pdf::Permission::ANNOTATE),
+        can_assemble: writable && permissions.contains(mupdf::pdf::Permission::ASSEMBLE),
     })
 }
 fn unlocked(a: &PdfAnnotation) -> Result<bool, String> {
@@ -196,7 +204,7 @@ pub(crate) fn annotations(
             opacity: a.opacity().map_err(error)?,
             editable: !partial
                 && unlocked(&a)?
-                && doc.permissions().contains(mupdf::pdf::Permission::ANNOTATE),
+                && crate::forms::permissions(doc).contains(mupdf::pdf::Permission::ANNOTATE),
         });
     }
     Ok((result, truncated))
@@ -216,6 +224,9 @@ fn selected(pages: &[usize], count: usize) -> Result<Vec<usize>, String> {
     Ok(result)
 }
 pub(crate) fn mutate(doc: &mut PdfDocument, command: &EditCommand) -> Result<usize, String> {
+    if let EditCommand::Form(edit) = command {
+        return crate::forms::apply(doc, edit);
+    }
     let info = info(doc)?;
     if matches!(command,EditCommand::UpdateNote{page,ordinal,..}|EditCommand::Color{page,ordinal,..}|EditCommand::DeleteAnnotation{page,ordinal} if *page>=info.pages||*ordinal>=10_000)
     {
@@ -235,6 +246,7 @@ pub(crate) fn mutate(doc: &mut PdfDocument, command: &EditCommand) -> Result<usi
         return Err("This PDF does not permit page assembly".into());
     }
     match command {
+        EditCommand::Form(_) => unreachable!(),
         EditCommand::Add(annotation) => {
             files::apply(doc, std::slice::from_ref(annotation))?;
             Ok(annotation.page())
@@ -365,7 +377,7 @@ fn insert(doc: &mut PdfDocument, paths: &[PathBuf], at: usize) -> Result<(), Str
     let mut total = count;
     for path in paths {
         let source = files::open(path, None)?;
-        if !source.permissions().contains(mupdf::pdf::Permission::COPY) {
+        if !crate::forms::permissions(&source).contains(mupdf::pdf::Permission::COPY) {
             return Err("An imported PDF does not permit copying".into());
         }
         let pages = source.page_count().map_err(error)?;
@@ -877,7 +889,7 @@ fn import_interactivity(
 }
 fn export_rights(doc: &PdfDocument) -> Result<(), String> {
     info(doc)?;
-    let p = doc.permissions();
+    let p = crate::forms::permissions(doc);
     if !p.contains(mupdf::pdf::Permission::COPY | mupdf::pdf::Permission::ASSEMBLE) {
         return Err("This PDF does not permit page extraction".into());
     }

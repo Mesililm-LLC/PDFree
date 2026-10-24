@@ -14,6 +14,8 @@ mod reader_tests;
 
 #[path = "editing.rs"]
 mod editing;
+#[path = "forms.rs"]
+mod forms;
 pub use editing::ToolDialog;
 
 pub struct State {
@@ -45,6 +47,7 @@ pub struct State {
     pub(crate) tools: crate::features::ReaderTools,
     path: Option<PathBuf>,
     pub(crate) editor: editing::Editor,
+    pub(crate) forms: forms::Forms,
 }
 
 impl State {
@@ -83,6 +86,7 @@ impl State {
             tools: Default::default(),
             path: None,
             editor: Default::default(),
+            forms: Default::default(),
         }
     }
 
@@ -91,6 +95,7 @@ impl State {
     }
 
     fn open_password(&mut self, ui: &AppWindow, path: PathBuf, password: Option<String>) {
+        self.reset_forms(ui);
         self.reset_editor(ui);
         self.tools.reset(ui);
         self.navigation.reset(ui);
@@ -174,6 +179,10 @@ impl State {
         Some((page, x - rect.x, y - rect.y))
     }
     pub fn reader_pointer(&mut self, ui: &AppWindow, x: f32, y: f32, phase: i32) {
+        if ui.get_form_mode() > 0 {
+            self.form_pointer(ui, x, y, phase);
+            return;
+        }
         if phase == 3 {
             self.pointer = None;
             return;
@@ -196,6 +205,9 @@ impl State {
         }
     }
     pub fn reader_click(&mut self, ui: &AppWindow, x: f32, y: f32) {
+        if ui.get_form_mode() > 0 {
+            return;
+        }
         if let Some((page, x, y)) = self.reader_position(x, y, false) {
             self.activate_link(ui, page, x, y);
         }
@@ -270,6 +282,9 @@ impl State {
     pub fn action(&mut self, ui: &AppWindow, action: &str) {
         self.pointer = None;
         if ui.get_pending_open() && !action.starts_with("pending-") {
+            return;
+        }
+        if self.form_action(ui, action) {
             return;
         }
         if self.edit_action(ui, action) {
@@ -423,6 +438,7 @@ impl State {
     }
 
     pub fn tick(&mut self, ui: &AppWindow) {
+        self.form_blur(ui);
         let mut changed = false;
         for _ in 0..64 {
             let Ok(event) = self.engine.events.try_recv() else {
@@ -432,6 +448,7 @@ impl State {
             self.navigation
                 .event(ui, self.document, self.editor.revision, &event);
             changed |= self.edit_event(ui, &event);
+            changed |= self.form_event(ui, &event);
             if matches!(&event,Event::Changed{document,..} if *document==self.document) {
                 self.navigation.reset(ui);
                 self.engine.outlines(self.document, self.editor.revision);
@@ -451,6 +468,9 @@ impl State {
                     ui.set_loading(false);
                     ui.set_ready(true);
                     ui.set_can_copy(info.can_copy);
+                    ui.set_can_form(info.can_form);
+                    ui.set_document_signed(info.signed);
+                    ui.set_can_edit_forms(info.can_edit);
                     ui.set_can_annotate(info.can_annotate);
                     ui.set_can_assemble(info.can_assemble);
                     ui.set_password_required(false);
@@ -657,6 +677,7 @@ impl State {
             .filter(|&p| self.layout.pages[p].width > 0.)
             .collect();
         self.edit_refresh(ui, &active);
+        self.form_refresh(ui, &active);
         self.tools.refresh(
             ui,
             &self.engine,

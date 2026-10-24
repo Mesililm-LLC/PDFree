@@ -53,3 +53,7 @@ MuPDF default features are disabled; Base14 fonts are enabled. JavaScript, OCR, 
 See `tests/corpus/manifest.json`, `scripts/check.ps1`, and `benchmarks/README.md`. Traces use monotonic time from entry to Rust main. `window_show_requested` is a request, `frame_rendered` is a renderer callback, and `first_page_pixels_published` is Slint model publication. None proves physical display presentation. A fresh-process warm trial is not a cold filesystem/driver trial.
 
 Official references: [MuPDF threading](https://github.com/artifexsoftware/mupdf/blob/master/docs/reference/c/overview.md), [published Rust binding](https://docs.rs/mupdf/0.8.0/mupdf/), [Slint images](https://docs.slint.dev/latest/docs/rust/slint/struct.Image.html), [Slint renderer choices](https://docs.slint.dev/latest/docs/slint/guide/backends-and-renderers/backend_winit/).
+
+## Forms and signing
+
+The owned form model and isolated native adapter extend the shared journal and safe-save pipeline. Offline recognition uses a separate cancellable Tesseract process. Visual marks are ordinary annotation appearances. Certificate signing has a dedicated incremental path and never uses the full-rewrite save path. See [forms](forms.md) for contracts, limits, and qualification commands.

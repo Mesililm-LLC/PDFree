@@ -15,7 +15,7 @@ pub enum ToolDialog {
 pub(crate) struct Editor {
     pub(crate) revision: u64,
     dirty: bool,
-    operation: u64,
+    pub(super) operation: u64,
     wanted: Vec<usize>,
     pub(super) notes: BTreeMap<usize, Vec<NativeAnnotation>>,
     note_target: Option<(usize, f32, f32, Option<usize>)>,
@@ -61,6 +61,9 @@ impl State {
         }
     }
     pub fn request_open(&mut self, ui: &AppWindow, path: PathBuf) {
+        if self.form_before_open(ui, &path) {
+            return;
+        }
         if self.edit_blocked(ui) {
             return;
         }
@@ -75,6 +78,9 @@ impl State {
         }
     }
     pub fn request_close(&mut self, ui: &AppWindow) -> bool {
+        if self.form_before_close(ui) {
+            return false;
+        }
         if self.edit_blocked(ui) {
             return false;
         }
@@ -222,7 +228,7 @@ impl State {
             "Saving edits and renaming PDF…",
         );
     }
-    fn submit_edit(&mut self, ui: &AppWindow, command: EditCommand) {
+    pub(super) fn submit_edit(&mut self, ui: &AppWindow, command: EditCommand) {
         self.editor.operation += 1;
         let ok = self.engine.edit(
             self.document,
@@ -589,6 +595,9 @@ impl State {
                 self.sizes = vec![info.first_page; info.pages];
                 self.tools.reset(ui);
                 ui.set_can_copy(info.can_copy);
+                ui.set_can_form(info.can_form);
+                ui.set_document_signed(info.signed);
+                ui.set_can_edit_forms(info.can_edit);
                 ui.set_can_annotate(info.can_annotate);
                 ui.set_can_assemble(info.can_assemble);
                 ui.set_page_count(info.pages as i32);

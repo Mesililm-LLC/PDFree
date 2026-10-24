@@ -87,12 +87,16 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
     drop(completed);
     drop(job_rx);
     let mut document: Option<PdfDocument> = None;
+    let mut detection: Option<crate::detection::Detection> = None;
+    let mut detection_done: Option<(u64, usize, Vec<usize>)> = None;
     let mut can_copy = false;
     let mut journal: Option<viewer_core::SnapshotHistory> = None;
     let mut content: u64 = 0;
     let mut annotation_queue = std::collections::VecDeque::new();
+    let mut form_queue = std::collections::VecDeque::new();
     let mut annotation_cache = HashMap::new();
     let mut source_path = std::path::PathBuf::new();
+    let mut source_stamp: Option<crate::digital_signatures::SourceStamp> = None;
     let mut session_password: Option<String> = None;
     let mut notes_queue = std::collections::VecDeque::new();
     let mut notes_cache = HashMap::new();
@@ -112,6 +116,11 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
             std::mem::take(&mut *slot)
         };
         if let Some(open) = desired.open {
+            if detection.take().is_some() {
+                shared.file_busy.store(false, Ordering::Release);
+            }
+            detection_done = None;
+            form_queue.clear();
             journal = None;
             content = 0;
             shared.content.store(0, Ordering::Release);
@@ -125,6 +134,7 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
             queue.replace(Vec::new());
             document_id = open.document;
             source_path = open.path.clone();
+            source_stamp = crate::digital_signatures::SourceStamp::read(&source_path).ok();
             session_password = open.password.clone();
             notes_queue.clear();
             notes_cache.clear();
@@ -163,10 +173,20 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                     .load_page(0)
                     .and_then(|p| p.bounds())
                     .map_err(|e| EngineError::InvalidDocument(e.to_string()))?;
+                let (signed, xfa, _) = crate::forms::security(&doc).unwrap_or((true, true, true));
+                let writable = !signed && !xfa;
                 let info = DocumentInfo {
-                    can_copy: doc.permissions().contains(Permission::COPY),
-                    can_annotate: doc.permissions().contains(Permission::ANNOTATE),
-                    can_assemble: doc.permissions().contains(Permission::ASSEMBLE),
+                    can_form: writable
+                        && crate::forms::permissions(&doc).contains(Permission::FORM),
+                    can_edit: writable
+                        && crate::forms::permissions(&doc)
+                            .contains(Permission::MODIFY | Permission::ANNOTATE),
+                    signed,
+                    can_copy: crate::forms::permissions(&doc).contains(Permission::COPY),
+                    can_annotate: writable
+                        && crate::forms::permissions(&doc).contains(Permission::ANNOTATE),
+                    can_assemble: writable
+                        && crate::forms::permissions(&doc).contains(Permission::ASSEMBLE),
                     pages: count as usize,
                     first_page: PageSize::new(bounds.width(), bounds.height()),
                 };
@@ -203,6 +223,110 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
             }
         }
         if let Some(command) = desired.file {
+            if let FileCommandAction::Sign { revision, request } = &command.action {
+                let result = (|| {
+                    if command.document != document_id
+                        || *revision != journal.as_ref().map_or(0, |h| h.revision())
+                        || journal.as_ref().is_some_and(|h| h.dirty())
+                    {
+                        return Err("Save and review your edits before signing.".to_string());
+                    }
+                    let stamp = source_stamp
+                        .as_ref()
+                        .ok_or("The original PDF file is unavailable")?;
+                    crate::digital_signatures::sign(
+                        &source_path,
+                        session_password.as_deref(),
+                        stamp,
+                        request,
+                        || {
+                            shared.current_document(command.document)
+                                && !shared.sign_cancel.load(Ordering::Acquire)
+                        },
+                    )
+                })();
+                shared.file_busy.store(false, Ordering::Release);
+                match result {
+                    Ok((path, integrity)) => {
+                        emit(
+                            &shared,
+                            &events,
+                            Event::Signed {
+                                document: command.document,
+                                operation: command.operation,
+                                path,
+                                integrity,
+                            },
+                        );
+                    }
+                    Err(message) => {
+                        emit(
+                            &shared,
+                            &events,
+                            Event::FileError {
+                                document: command.document,
+                                operation: command.operation,
+                                message,
+                            },
+                        );
+                    }
+                }
+                continue;
+            }
+
+            if let FileCommandAction::Detect {
+                revision,
+                generation,
+                pages,
+            } = &command.action
+            {
+                let result = (|| {
+                    let doc = document.as_ref().ok_or("No PDF is open")?;
+                    if command.document != document_id
+                        || *revision != journal.as_ref().map_or(0, |h| h.revision())
+                    {
+                        return Err("Document changed before detection started".to_string());
+                    }
+                    crate::forms::ensure_writable(doc)?;
+                    if !crate::forms::permissions(doc)
+                        .contains(Permission::COPY | Permission::MODIFY)
+                    {
+                        return Err(
+                            "This PDF does not permit field recognition and creation".into()
+                        );
+                    }
+                    let count = doc.page_count().map_err(|e| e.to_string())? as usize;
+                    let mut unique = HashSet::new();
+                    if pages.iter().any(|p| *p >= count || !unique.insert(*p)) {
+                        return Err("Invalid detection page range".into());
+                    }
+                    crate::detection::Detection::new(
+                        command.document,
+                        *revision,
+                        command.operation,
+                        *generation,
+                        pages.clone(),
+                    )
+                })();
+                match result {
+                    Ok(job) => {
+                        detection = Some(job);
+                    }
+                    Err(message) => {
+                        shared.file_busy.store(false, Ordering::Release);
+                        emit(
+                            &shared,
+                            &events,
+                            Event::FileError {
+                                document: command.document,
+                                operation: command.operation,
+                                message,
+                            },
+                        );
+                    }
+                }
+                continue;
+            }
             let direct_save = matches!(&command.action, FileCommandAction::Save);
             if let FileCommandAction::Edit {
                 revision,
@@ -214,6 +338,12 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                     || !shared.current_document(command.document)
                 {
                     Err("The document changed before editing started".into())
+                } else if matches!(
+                    edit,
+                    crate::EditCommand::Form(viewer_core::FormEdit::CreateDetected(_))
+                ) && shared.detect_cancel.load(Ordering::Acquire)
+                {
+                    Err("Field detection cancelled; no fields were created.".into())
                 } else if let Some(doc) = document.as_ref() {
                     crate::editing::perform(
                         doc,
@@ -221,13 +351,22 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                         session_password.as_deref(),
                         *revision,
                         edit,
-                        || shared.current_document(command.document),
+                        || {
+                            shared.current_document(command.document)
+                                && (!matches!(
+                                    edit,
+                                    crate::EditCommand::Form(
+                                        viewer_core::FormEdit::CreateDetected(_)
+                                    )
+                                ) || !shared.detect_cancel.load(Ordering::Acquire))
+                        },
                     )
                 } else {
                     Err("No PDF is open".into())
                 };
                 match result {
                     Ok((doc, focus, revision)) => {
+                        form_queue.clear();
                         let info = crate::editing::info(&doc).expect("validated edited PDF");
                         content = content.wrapping_add(1);
                         shared.content.store(content, Ordering::Release);
@@ -247,6 +386,7 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                         document = Some(doc);
                         shared.file_busy.store(false, Ordering::Release);
                         let h = journal.as_ref().unwrap();
+                        let detection_summary = detection_done.take();
                         emit(
                             &shared,
                             &events,
@@ -262,8 +402,21 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                                 focus_page: focus,
                             },
                         );
+                        if let Some((operation, count, review_pages)) = detection_summary {
+                            emit(
+                                &shared,
+                                &events,
+                                Event::DetectionDone {
+                                    document: document_id,
+                                    operation,
+                                    count,
+                                    review_pages,
+                                },
+                            );
+                        }
                     }
                     Err(message) => {
+                        detection_done = None;
                         shared.file_busy.store(false, Ordering::Release);
                         emit(
                             &shared,
@@ -302,7 +455,7 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                 };
                 match action {
                     FileCommandAction::Save => unreachable!(),
-                    FileCommandAction::Edit { .. } => unreachable!(),
+                    FileCommandAction::Edit { .. } | FileCommandAction::Detect {..} | FileCommandAction::Sign{..} => unreachable!(),
                     FileCommandAction::Extract {
                         revision,
                         target,
@@ -542,12 +695,21 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
             };
             shared.file_busy.store(false, Ordering::Release);
             let event = match result {
-                Ok((path, kind)) => Event::FileDone {
-                    document: command.document,
-                    operation: command.operation,
-                    path,
-                    kind,
-                },
+                Ok((path, kind)) => {
+                    if matches!(
+                        kind,
+                        FileAction::Save | FileAction::SaveAs | FileAction::Rename
+                    ) {
+                        source_stamp =
+                            crate::digital_signatures::SourceStamp::read(&source_path).ok();
+                    }
+                    Event::FileDone {
+                        document: command.document,
+                        operation: command.operation,
+                        path,
+                        kind,
+                    }
+                }
                 Err(message) => Event::FileError {
                     document: command.document,
                     operation: command.operation,
@@ -592,7 +754,91 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
             notes_cache.retain(|p, _| pages.contains(p));
             notes_queue = pages.into();
         }
+        if let (Some(job), Some(doc)) = (detection.as_mut(), document.as_ref()) {
+            if shared.detect_cancel.load(Ordering::Acquire)
+                || job.document != document_id
+                || job.revision != journal.as_ref().map_or(0, |h| h.revision())
+            {
+                job.cancel();
+            }
+            let previous = job.processed;
+            match job.advance(doc) {
+                Ok(true) => {
+                    let mut job = detection.take().unwrap();
+                    let mut review_pages = job
+                        .found
+                        .iter()
+                        .filter(|f| f.spec.review)
+                        .map(|f| f.spec.page)
+                        .collect::<Vec<_>>();
+                    review_pages.sort_unstable();
+                    review_pages.dedup();
+                    let count = job.found.len();
+                    if count == 0 {
+                        shared.file_busy.store(false, Ordering::Release);
+                        emit(
+                            &shared,
+                            &events,
+                            Event::DetectionDone {
+                                document: job.document,
+                                operation: job.operation,
+                                count,
+                                review_pages,
+                            },
+                        );
+                    } else {
+                        detection_done = Some((job.operation, count, review_pages));
+                        shared.desired.lock().unwrap().file = Some(crate::FileCommand {
+                            document: job.document,
+                            operation: job.operation,
+                            action: FileCommandAction::Edit {
+                                revision: job.revision,
+                                generation: job.generation,
+                                command: crate::EditCommand::Form(
+                                    viewer_core::FormEdit::CreateDetected(std::mem::take(
+                                        &mut job.found,
+                                    )),
+                                ),
+                            },
+                        });
+                    }
+                }
+                Ok(false) => {
+                    if job.processed != previous {
+                        emit(
+                            &shared,
+                            &events,
+                            Event::DetectionProgress {
+                                document: job.document,
+                                operation: job.operation,
+                                processed: job.processed,
+                                total: job.total,
+                            },
+                        );
+                    }
+                }
+                Err(message) => {
+                    let job = detection.take().unwrap();
+                    shared.file_busy.store(false, Ordering::Release);
+                    emit(
+                        &shared,
+                        &events,
+                        Event::FileError {
+                            document: job.document,
+                            operation: job.operation,
+                            message,
+                        },
+                    );
+                }
+            }
+        }
         let revision = journal.as_ref().map_or(0, |h| h.revision());
+        if let Some((id, rev, pages)) = desired.forms
+            && id == document_id
+            && rev == revision
+        {
+            form_queue = pages.into_iter().filter(|p| *p < geometry.len()).collect();
+        }
         if let Some((id, rev)) = desired.outlines
             && id == document_id
             && rev == revision
@@ -713,6 +959,34 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
             }
         }
         if let Some(doc) = &document {
+            if let Some(page) = form_queue.pop_front() {
+                match crate::forms::page(doc, page) {
+                    Ok(fields) => {
+                        emit(
+                            &shared,
+                            &events,
+                            Event::Forms {
+                                document: document_id,
+                                revision: journal.as_ref().map_or(0, |h| h.revision()),
+                                page,
+                                fields,
+                            },
+                        );
+                    }
+                    Err(message) => {
+                        emit(
+                            &shared,
+                            &events,
+                            Event::ReaderError {
+                                document: document_id,
+                                operation: "forms",
+                                page: Some(page),
+                                message,
+                            },
+                        );
+                    }
+                }
+            }
             if let Some(page) = annotation_queue.pop_front() {
                 let result = annotation_cache
                     .get(&page)

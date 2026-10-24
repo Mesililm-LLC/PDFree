@@ -12,3 +12,19 @@ version = "0.1.0"
 lto = "thin"
 codegen-units = 1
 strip = "debuginfo"
+
+# Slint generates a large UI module; full debug metadata exhausts memory during
+# concurrent test linking on the supported Windows development machine.
+[profile.dev.package.pdfree]
+debug = 0
+
+[profile.test.package.pdfree]
+debug = 0
+
+[profile.dev.package.pdf-engine]
+debug = 0
+opt-level = 1
+
+[profile.test.package.pdf-engine]
+debug = 0
+opt-level = 1

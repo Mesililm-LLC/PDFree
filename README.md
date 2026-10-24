@@ -1,6 +1,6 @@
 # PDFree
 
-An offline Windows 11 x64 PDF viewer and annotation prototype built with Rust, Slint, and MuPDF. It opens real PDFs with a virtualized continuous viewport, asynchronous clipped rendering, page navigation, and zoom/fit controls.
+An offline Windows 11 x64 PDF viewer, form editor, and annotation prototype built with Rust, Slint, and MuPDF. It opens real PDFs with a virtualized continuous viewport, asynchronous clipped rendering, page navigation, and zoom/fit controls.
 
 ## Build and run
 
@@ -8,18 +8,19 @@ Requirements: Rust 1.97.1 MSVC, Python 3, Visual Studio C++ Build Tools with the
 
 ```powershell
 ./scripts/bootstrap.ps1
+./scripts/bootstrap-forms-tools.ps1
 ./scripts/build.ps1 -Release
 ./target/release/pdfree.exe
 ./target/release/pdfree.exe ./tests/corpus/office.pdf
 ```
 
-The first build downloads public Rust dependencies. The application itself has no network services, telemetry, OCR models, JavaScript, or cloud requirements. Use the portable folder produced by `scripts/package.ps1` for local deployment; source and the lockfile remain in this repository.
+The first build downloads public Rust dependencies. The application itself has no network services, telemetry, JavaScript execution, or cloud requirements. The portable package includes pinned English OCR for field detection. Use the portable folder produced by `scripts/package.ps1` for local deployment; source and the lockfile remain in this repository.
 
 ## Controls
 
 Open PDF or Ctrl+O opens the native picker. Use the scrollbars or wheel to browse, enter a page number to jump, and use toolbar controls to zoom or fit the page. Ctrl +/− changes zoom, Ctrl+0 fits width, PgUp/PgDn changes page, arrows scroll, and Home/End navigates to the beginning/end. Zoom is limited to 25–400%.
 
-Encrypted PDFs show a masked password form with retry and cancel. Ctrl+F or Find opens case-insensitive search; Enter/Next and Previous move between highlighted matches. Pages toggles lazy thumbnails; click one to jump. Use Bookmarks to navigate document outlines. Click an internal link to jump to its destination, or a web link to open the default browser. The view picker offers Continuous, Single page, and Facing pages (1–2, 3–4). Drag across text and page boundaries, then press Ctrl+C or Copy selection. Drag near the viewport edge to scroll. Selection is limited to 16 pages, with page boundaries copied as blank lines; highlighting remains single-page. Copy restrictions are respected. Image-only pages have no selectable text; OCR is deferred. Passwords, queries, and copied text are not written to traces.
+Encrypted PDFs show a masked password form with retry and cancel. Ctrl+F or Find opens case-insensitive search; Enter/Next and Previous move between highlighted matches. Pages toggles lazy thumbnails; click one to jump. Use Bookmarks to navigate document outlines. Click an internal link to jump to its destination, or a web link to open the default browser. The view picker offers Continuous, Single page, and Facing pages (1–2, 3–4). Drag across text and page boundaries, then press Ctrl+C or Copy selection. Drag near the viewport edge to scroll. Selection is limited to 16 pages, with page boundaries copied as blank lines; highlighting remains single-page. Copy restrictions are respected. Image-only pages have no selectable text; form detection uses OCR without adding a searchable text layer. Passwords, queries, and copied text are not written to traces.
 
 ## Validation
 
@@ -31,7 +32,7 @@ Ctrl+S or Save commits the current PDF in place. Ctrl+Shift+S or Save As copy cr
 
 Manage pages accepts ranges such as `1-3,5`. Rotate or delete selected pages, move the current page to a new position, insert a blank page or PDF after the current page, or merge PDFs at the end. Extract writes selected pages to a new PDF. Split writes two PDFs into a chosen folder, dividing after the current page. At least one page must remain. Annotation and page changes share Ctrl+Z/Ctrl+Y undo/redo, including after saving; filenames and exported files are outside undo history.
 
-Editing history retains up to 200 commands within 128 MiB of serialized snapshots. A change is rejected if its before/after pair cannot fit. This excludes native clones, serialization buffers, and renderer memory. Editing supports up to 100,000 pages; each import accepts at most 16 PDFs. Imported PDFs must allow copying and open without a password. Imports preserve supported links, named/internal destinations, annotation appearance streams, popup relationships, and standard AcroForm fields. Imported field names are namespaced; incompatible form resources, additional actions, XFA, signatures, calculation order, and unsupported actions are rejected transactionally. Form filling is not implemented. Bookmarks are not imported. Page assembly and annotation permissions are respected. Extract/split require copying and page assembly permission, remove bookmarks, and preserve encryption; original passwords remain necessary. Page extraction/deletion is not secure redaction: document metadata or other references can retain excluded content.
+Editing history retains up to 200 commands within 128 MiB of serialized snapshots. A change is rejected if its before/after pair cannot fit. This excludes native clones, serialization buffers, and renderer memory. Editing supports up to 100,000 pages; each import accepts at most 16 PDFs. Imported PDFs must allow copying and open without a password. Imports preserve supported links, named/internal destinations, annotation appearance streams, popup relationships, and standard AcroForm fields. Imported field names are namespaced; incompatible form resources, additional actions, XFA, signatures, calculation order, and unsupported actions are rejected transactionally. Standard AcroForm filling and simple field authoring are available through the form modes. Bookmarks are not imported. Page assembly and annotation permissions are respected. Extract/split require copying and page assembly permission, remove bookmarks, and preserve encryption; original passwords remain necessary. Page extraction/deletion is not secure redaction: document metadata or other references can retain excluded content.
 
 ```powershell
 ./scripts/check.ps1
@@ -69,3 +70,17 @@ Search is capped at 10,000 matches and 512 UTF-8 bytes per query. Selectable tex
 ## License
 
 PDFree source: AGPL-3.0-only. MuPDF and mupdf-rs are AGPL licensed; Slint and other dependencies retain their own licenses. See LICENSE and THIRD_PARTY_NOTICES.md. No remote repository is configured by this prototype.
+
+## Forms and signatures
+
+Choose **Fill Form** to select a field, enter a value, or change a selection. Tab and Shift+Tab move between fields across pages. Leaving a text field commits one undoable edit. Linked widgets share their field value. Save and Save As retain encryption and verify reopened values, properties, and normal appearances.
+
+Choose **Prepare Form** to draw fields, move or resize selected rectangles, duplicate/delete fields, and apply labels, required/read-only settings, choice options, or semantic types. Text, multiline text, Date, Number, Checkbox, Radio button, Dropdown, List, Visual signature, and Digital signature are available. Date and Number use standard PDF text fields with PDFree validation metadata. Incompatible values must be resolved or cleared before conversion. Imported complex field trees remain fill-only; PDFree-created radio members support geometry and deletion while keeping group identity.
+
+**Detect Fields** analyzes the current page, a page range, or the document (up to 100 pages per run). It combines text/vector geometry and local English OCR, including scanned and mixed pages. Detection creates fields in one undoable operation and opens uncertain results for review. No personal values are inferred. Cancel before installation leaves the document unchanged. Missing or failed OCR leaves manual drawing available. Corrections and deleted detections are preserved on subsequent runs.
+
+Visual signatures support typing with the bundled Caveat font, drawing, or importing PNG/JPEG images. Marks are ordinary visible PDF appearances. They do not certify identity. Images and strokes are session-local unless embedded in the saved PDF; PDFree does not retain a reusable signature library.
+
+Certificate signing is separate. Draw an unsigned Digital signature field, save and review edits, then choose a local PKCS#12 certificate and a new output filename. PDFree imports keys without persistence, keeps passwords only for the session, appends a signed revision, verifies integrity, and opens the output read-only. The initial path supports one signer per output on Windows. Certificate trust, revocation, timestamps, and external signing services are not evaluated.
+
+Read [forms architecture and validation](docs/forms.md) for limits and reproducible qualification commands.

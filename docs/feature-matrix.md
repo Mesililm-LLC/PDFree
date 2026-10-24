@@ -23,14 +23,19 @@ Statuses describe application behavior, not everything MuPDF could support.
 | Mouse selection / Ctrl+C | Implemented | Cross-page multiline Unicode text, up to 16 pages; edge autoscroll; respects COPY; no OCR |
 | Single/facing views, outlines, links | Implemented, experimental | Indexed mixed-size layouts; bounded outlines/links; internal jumps and explicit HTTP/HTTPS clicks; unsupported actions reported |
 | Highlights / sticky notes | Implemented, experimental | Native Text/Highlight edits and deletion; locked or truncated previews read-only |
-| Undo / redo | Implemented | Shared annotation/page history, 200 commands / 128 MiB; filename changes and exports are separate |
+| Undo / redo | Implemented | Shared annotation/page/form history, 200 commands / 128 MiB; filename changes and exports are separate |
 | Save As | Implemented, experimental | New file only; opens the copy, leaves previous source unchanged; preserves encryption |
 | Inline filename rename and save | Implemented | Enter commits current annotations and filename; another file is never replaced; undo history retained |
 | Direct Save / Ctrl+S | Implemented, experimental | Verified sibling staging and Windows replacement with recovery backup |
 | Rotate / move / delete / blank page | Implemented, experimental | Shared undo; must retain one page; ASSEMBLE permission |
 | Insert / merge | Partial | Up to 16 unpassworded PDFs; supported links/destinations, popup/annotation graphs and AcroForm fields preserved; incompatible forms/actions rejected |
 | Extract / split | Implemented, experimental | New files only; COPY and ASSEMBLE; bookmarks removed; not secure redaction |
-| Forms / existing content editing | Unsupported in prototype | Separate editing milestone |
-| Redaction, OCR, compression, conversion | Unsupported in prototype | Separate acceptance gates |
-| Existing content editing / signatures | Unsupported in prototype | Separate fidelity and security research |
+| Existing AcroForm filling | Implemented, experimental | Owned field/widget identities, text/button/choice/list values, linked widgets, permissions, shared undo and verified save |
+| Manual form authoring | Implemented, experimental | Draw/move/resize/duplicate/delete, simple type conversion, labels and properties; imported complex trees remain fill-only |
+| Date / Number fields | Implemented | Standard text widgets with PDFree metadata and local validation; other readers see ordinary text fields |
+| Automatic field detection | Implemented, experimental | Offline native/raster/OCR analysis, second pass, atomic install and review; English, 100 pages/run, measured synthetic qualification |
+| Visual signatures | Implemented, experimental | Typed/drawn/PNG/JPEG marks as Stamp appearances; separate from digital signature fields |
+| Digital signatures | Implemented, experimental | Local PKCS#12, incremental new output, integrity verification and read-only reopen; Windows, one signer, trust not evaluated |
+| Redaction, searchable-text OCR, compression, conversion | Unsupported in prototype | Detection OCR does not add a text layer |
+| Existing content editing | Unsupported in prototype | Separate fidelity research |
 | AI, cloud, telemetry | Unsupported in prototype | No startup services or network runtime |

@@ -6,6 +6,289 @@ use slint::platform::{
 };
 use std::{cell::RefCell, rc::Rc};
 
+#[test]
+fn forms_drawing_filling_and_type_conversion_use_native_history() {
+    let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
+    slint::platform::set_platform(Box::new(TestPlatform {
+        window: window.clone(),
+        clipboard: Rc::new(RefCell::new(String::new())),
+    }))
+    .unwrap();
+    let ui = AppWindow::new().unwrap();
+    ui.window().set_size(slint::LogicalSize::new(1180., 850.));
+    ui.show().unwrap();
+    let state = Rc::new(RefCell::new(State::new(
+        Trace::new(Instant::now(), None).unwrap(),
+        false,
+    )));
+    let callback = state.clone();
+    let weak = ui.as_weak();
+    ui.on_action(move |a| {
+        callback
+            .borrow_mut()
+            .action(&weak.upgrade().unwrap(), a.as_str())
+    });
+    let callback = state.clone();
+    let weak = ui.as_weak();
+    ui.on_reader_pointer(move |x, y, phase| {
+        callback
+            .borrow_mut()
+            .reader_pointer(&weak.upgrade().unwrap(), x, y, phase)
+    });
+    let callback = state.clone();
+    let weak = ui.as_weak();
+    ui.on_form_select(move |i| {
+        callback
+            .borrow_mut()
+            .form_select(&weak.upgrade().unwrap(), i)
+    });
+    let callback = state.clone();
+    let weak = ui.as_weak();
+    ui.on_form_drag(move |i, x, y, phase, resize| {
+        callback
+            .borrow_mut()
+            .form_drag(&weak.upgrade().unwrap(), i, x, y, phase, resize)
+    });
+    let callback = state.clone();
+    let weak = ui.as_weak();
+    ui.on_signature_pointer(move |x, y, phase| {
+        callback
+            .borrow_mut()
+            .signature_pointer(&weak.upgrade().unwrap(), x, y, phase)
+    });
+    state.borrow_mut().open(&ui, fixture("blank.pdf"));
+    wait(&mut state.borrow_mut(), &ui, |_, u| u.get_ready());
+    ui.invoke_action("form-prepare".into());
+    state.borrow_mut().tick(&ui);
+    // Draw through the real viewport's pointer callbacks, at 150% device scale.
+    ui.window()
+        .dispatch_event(WindowEvent::ScaleFactorChanged { scale_factor: 1.5 });
+    ui.window().set_size(slint::LogicalSize::new(1180., 850.));
+    state.borrow_mut().tick(&ui);
+    let p = state.borrow().layout.pages[0];
+    let scale = state.borrow().zoom * 96. / 72.;
+    let offset_x = 1180. - ui.get_view_width();
+    let offset_y = 850. - ui.get_view_height() - 32.;
+    let point = |x: f32, y: f32| {
+        slint::LogicalPosition::new(
+            offset_x + p.x + x * scale + ui.get_scroll_x(),
+            offset_y + p.y + y * scale + ui.get_scroll_y(),
+        )
+    };
+    let mut buffer = vec![slint::Rgb8Pixel::default(); 1770 * 1275];
+    window.draw_if_needed(|r| {
+        r.render(&mut buffer, 1770);
+    });
+    ui.window().dispatch_event(WindowEvent::PointerPressed {
+        position: point(40., 40.),
+        button: PointerEventButton::Left,
+    });
+    ui.window().dispatch_event(WindowEvent::PointerMoved {
+        position: point(240., 66.),
+    });
+    ui.window().dispatch_event(WindowEvent::PointerReleased {
+        position: point(240., 66.),
+        button: PointerEventButton::Left,
+    });
+    wait(&mut state.borrow_mut(), &ui, |s, u| {
+        !u.get_file_busy() && s.forms.records.values().flatten().count() == 1
+    });
+    assert!(ui.get_dirty_document());
+    ui.invoke_form_select(0);
+    ui.set_form_value("2028-02-29".into());
+    ui.invoke_action("form-commit".into());
+    wait(&mut state.borrow_mut(), &ui, |s, u| {
+        !u.get_file_busy()
+            && s.forms
+                .records
+                .values()
+                .flatten()
+                .any(|f| f.value.text() == "2028-02-29")
+    });
+    ui.invoke_form_select(0);
+    ui.set_form_kind(2);
+    ui.invoke_action("form-properties".into());
+    wait(&mut state.borrow_mut(), &ui, |s, u| {
+        !u.get_file_busy()
+            && s.forms
+                .records
+                .values()
+                .flatten()
+                .any(|f| f.spec.kind == viewer_core::FieldKind::Date)
+    });
+    ui.invoke_action("undo".into());
+    wait(&mut state.borrow_mut(), &ui, |s, u| {
+        !u.get_file_busy()
+            && s.forms
+                .records
+                .values()
+                .flatten()
+                .any(|f| f.spec.kind == viewer_core::FieldKind::Text)
+    });
+    ui.invoke_form_select(0);
+    ui.set_form_value("2030-01-01".into());
+    ui.set_form_kind(2);
+    ui.invoke_action("form-properties".into());
+    wait(&mut state.borrow_mut(), &ui, |s, u| {
+        !u.get_file_busy()
+            && s.forms.records.values().flatten().any(|f| {
+                f.spec.kind == viewer_core::FieldKind::Date && f.value.text() == "2030-01-01"
+            })
+    });
+    ui.invoke_action("undo".into());
+    wait(&mut state.borrow_mut(), &ui, |s, u| {
+        !u.get_file_busy()
+            && s.forms
+                .records
+                .values()
+                .flatten()
+                .any(|f| f.spec.kind == viewer_core::FieldKind::Text)
+    });
+    ui.invoke_form_select(0);
+    let before = state
+        .borrow()
+        .forms
+        .records
+        .values()
+        .flatten()
+        .next()
+        .unwrap()
+        .spec
+        .rect;
+    ui.invoke_form_drag(0, 100., 100., 0, true);
+    ui.invoke_form_drag(0, 140., 120., 1, true);
+    assert!(ui.get_form_draft_visible());
+    ui.invoke_form_drag(0, 140., 120., 2, true);
+    wait(&mut state.borrow_mut(), &ui, |s, u| {
+        !u.get_file_busy()
+            && s.forms
+                .records
+                .values()
+                .flatten()
+                .next()
+                .unwrap()
+                .spec
+                .rect
+                .right
+                > before.right
+    });
+    // Tab leaves a text draft as one history operation, then selects the next field.
+    ui.invoke_action("form-duplicate".into());
+    wait(&mut state.borrow_mut(), &ui, |s, u| {
+        !u.get_file_busy() && s.forms.records.values().flatten().count() == 2
+    });
+    ui.invoke_action("form-fill".into());
+    ui.invoke_form_select(0);
+    ui.set_form_value("Typed through fill mode".into());
+    ui.invoke_focus_document();
+    press_key(&ui, Key::Tab.into());
+    wait(&mut state.borrow_mut(), &ui, |s, u| {
+        !u.get_file_busy()
+            && s.forms
+                .records
+                .values()
+                .flatten()
+                .any(|f| f.value.text() == "Typed through fill mode")
+    });
+    ui.invoke_action("form-review".into());
+    ui.invoke_action("form-fill".into());
+    ui.invoke_form_select(0);
+    let first = ui.get_form_name();
+    ui.invoke_action("form-next".into());
+    wait(&mut state.borrow_mut(), &ui, |_, u| {
+        u.get_form_name() != first
+    });
+    // Scrolling may evict all visible pages while a text draft is selected.
+    ui.invoke_form_select(0);
+    ui.set_form_value("Draft survives scrolling".into());
+    state.borrow_mut().form_refresh(&ui, &[]);
+    ui.invoke_action("form-commit".into());
+    wait(&mut state.borrow_mut(), &ui, |s, u| {
+        !u.get_file_busy()
+            && s.forms
+                .records
+                .values()
+                .flatten()
+                .any(|f| f.value.text() == "Draft survives scrolling")
+    });
+    crate::capture::snapshot(&ui, "forms-fill").unwrap();
+    // Visual capture uses the same callbacks as the signature canvas.
+    ui.invoke_action("form-prepare".into());
+    ui.set_form_kind(8);
+    ui.set_form_label("Signature".into());
+    ui.invoke_action("form-new".into());
+    let p = state.borrow().layout.pages[0];
+    let scale = state.borrow().zoom * 96. / 72.;
+    ui.invoke_reader_pointer(p.x + 40. * scale, p.y + 160. * scale, 0);
+    ui.invoke_reader_pointer(p.x + 260. * scale, p.y + 205. * scale, 2);
+    wait(&mut state.borrow_mut(), &ui, |s, u| {
+        !u.get_file_busy() && s.forms.records.values().flatten().count() == 3
+    });
+    let index = state
+        .borrow()
+        .forms
+        .records
+        .values()
+        .flatten()
+        .position(|f| f.spec.kind == viewer_core::FieldKind::VisualSignature)
+        .unwrap();
+    ui.invoke_form_select(index as i32);
+    ui.invoke_action("form-sign-draw".into());
+    assert!(ui.get_signature_visible());
+    ui.invoke_signature_pointer(20., 100., 0);
+    ui.invoke_signature_pointer(100., 30., 1);
+    ui.invoke_signature_pointer(240., 85., 1);
+    ui.invoke_signature_pointer(360., 45., 2);
+    crate::capture::snapshot(&ui, "forms-signature-capture").unwrap();
+    ui.invoke_action("form-sign-apply".into());
+    wait(&mut state.borrow_mut(), &ui, |s, u| {
+        !u.get_file_busy()
+            && s.forms.records.values().flatten().any(|f| {
+                f.spec.kind == viewer_core::FieldKind::VisualSignature && !f.value.is_empty()
+            })
+    });
+    // New radio members reselect by their generated export/widget identity.
+    for (index, top) in [(0, 260.), (1, 300.)] {
+        ui.set_form_kind(5);
+        ui.set_form_group("choices".into());
+        ui.set_form_label(format!("Choice {}", index + 1).into());
+        ui.invoke_action("form-new".into());
+        let p = state.borrow().layout.pages[0];
+        let scale = state.borrow().zoom * 96. / 72.;
+        ui.invoke_reader_pointer(p.x + 40. * scale, p.y + top * scale, 0);
+        ui.invoke_reader_pointer(p.x + 54. * scale, p.y + (top + 14.) * scale, 2);
+        wait(&mut state.borrow_mut(), &ui, |s, u| {
+            !u.get_file_busy() && s.forms.records.values().flatten().count() == 4 + index
+        });
+        assert!(ui.get_form_selected());
+        assert_eq!(ui.get_form_value_kind(), 5);
+    }
+    let radios = state
+        .borrow()
+        .forms
+        .records
+        .values()
+        .flatten()
+        .enumerate()
+        .filter(|(_, f)| f.spec.kind == viewer_core::FieldKind::Radio)
+        .map(|(i, f)| (i, f.id))
+        .collect::<Vec<_>>();
+    ui.invoke_form_select(radios[1].0 as i32);
+    ui.set_form_checked(true);
+    ui.invoke_action("form-toggle".into());
+    wait(&mut state.borrow_mut(), &ui, |_, u| !u.get_file_busy());
+    let surfaces = ui.get_form_surfaces();
+    assert!(
+        surfaces
+            .iter()
+            .any(|f| f.selected && f.index == radios[1].0 as i32)
+    );
+    crate::capture::snapshot(&ui, "forms-prepare").unwrap();
+    ui.window().set_size(slint::LogicalSize::new(680., 480.));
+    state.borrow_mut().tick(&ui);
+    crate::capture::snapshot(&ui, "forms-small").unwrap();
+}
+
 struct TestPlatform {
     window: Rc<MinimalSoftwareWindow>,
     clipboard: Rc<RefCell<String>>,

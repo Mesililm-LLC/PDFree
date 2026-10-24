@@ -1,7 +1,14 @@
 //! MuPDF ownership and background rendering boundary.
 mod coordinator;
+mod detection;
+mod digital_signatures;
 mod editing;
 mod files;
+mod forms;
+mod visual_signatures;
+pub use digital_signatures::{
+    SecretPassword, SignatureIntegrity, SigningRequest, verify_signature,
+};
 mod navigation;
 mod raster;
 mod reader;
@@ -23,6 +30,9 @@ pub const NATIVE_STORE_LIMIT_MIB: usize = 256;
 
 #[derive(Clone, Debug)]
 pub struct DocumentInfo {
+    pub can_form: bool,
+    pub can_edit: bool,
+    pub signed: bool,
     pub pages: usize,
     pub first_page: PageSize,
     pub can_copy: bool,
@@ -32,6 +42,7 @@ pub struct DocumentInfo {
 
 #[derive(Clone, Debug)]
 pub enum EditCommand {
+    Form(viewer_core::FormEdit),
     Add(Annotation),
     UpdateNote {
         page: usize,
@@ -91,6 +102,15 @@ struct FileCommand {
     action: FileCommandAction,
 }
 enum FileCommandAction {
+    Sign {
+        revision: u64,
+        request: SigningRequest,
+    },
+    Detect {
+        revision: u64,
+        generation: u64,
+        pages: Vec<usize>,
+    },
     Edit {
         revision: u64,
         generation: u64,
@@ -140,6 +160,30 @@ impl std::error::Error for EngineError {}
 
 #[derive(Debug)]
 pub enum Event {
+    Signed {
+        document: u64,
+        operation: u64,
+        path: PathBuf,
+        integrity: SignatureIntegrity,
+    },
+    DetectionProgress {
+        document: u64,
+        operation: u64,
+        processed: usize,
+        total: usize,
+    },
+    DetectionDone {
+        document: u64,
+        operation: u64,
+        count: usize,
+        review_pages: Vec<usize>,
+    },
+    Forms {
+        document: u64,
+        revision: u64,
+        page: usize,
+        fields: Vec<viewer_core::FormField>,
+    },
     Outlines {
         document: u64,
         revision: u64,
@@ -256,6 +300,7 @@ struct View {
 
 #[derive(Default)]
 struct Desired {
+    forms: Option<(u64, u64, Vec<usize>)>,
     outlines: Option<(u64, u64)>,
     links: Option<(u64, u64, Vec<usize>)>,
     annotations: Option<(u64, u64, Vec<usize>)>,
@@ -269,6 +314,8 @@ struct Desired {
 }
 
 struct Shared {
+    sign_cancel: AtomicBool,
+    detect_cancel: AtomicBool,
     content: AtomicU64,
     desired: Mutex<Desired>,
     document: AtomicU64,
@@ -303,6 +350,8 @@ impl Engine {
     pub fn spawn(workers: usize) -> Self {
         let shared = Arc::new(Shared {
             content: AtomicU64::new(0),
+            detect_cancel: AtomicBool::new(false),
+            sign_cancel: AtomicBool::new(false),
             desired: Mutex::new(Desired::default()),
             document: AtomicU64::new(0),
             generation: AtomicU64::new(0),
@@ -361,6 +410,11 @@ impl Engine {
         self.shared.desired.lock().unwrap().outlines = Some((document, revision));
         let _ = self.wake.try_send(());
     }
+    pub fn form_pages(&self, document: u64, revision: u64, pages: Vec<usize>) {
+        self.shared.desired.lock().unwrap().forms =
+            Some((document, revision, pages.into_iter().take(16).collect()));
+        let _ = self.wake.try_send(());
+    }
     pub fn links_pages(&self, document: u64, revision: u64, pages: Vec<usize>) {
         self.shared.desired.lock().unwrap().links =
             Some((document, revision, pages.into_iter().take(16).collect()));
@@ -386,9 +440,53 @@ impl Engine {
         {
             return false;
         }
+        if matches!(&command.action, FileCommandAction::Detect { .. }) {
+            self.shared.detect_cancel.store(false, Ordering::Release);
+        }
+        if matches!(&command.action, FileCommandAction::Sign { .. }) {
+            self.shared.sign_cancel.store(false, Ordering::Release);
+        }
         self.shared.desired.lock().unwrap().file = Some(command);
         let _ = self.wake.try_send(());
         true
+    }
+    pub fn detect_fields(
+        &self,
+        document: u64,
+        revision: u64,
+        operation: u64,
+        generation: u64,
+        pages: Vec<usize>,
+    ) -> bool {
+        self.file(FileCommand {
+            document,
+            operation,
+            action: FileCommandAction::Detect {
+                revision,
+                generation,
+                pages,
+            },
+        })
+    }
+    pub fn cancel_detection(&self) {
+        self.shared.detect_cancel.store(true, Ordering::Release);
+        let _ = self.wake.try_send(());
+    }
+    pub fn sign(
+        &self,
+        document: u64,
+        revision: u64,
+        operation: u64,
+        request: SigningRequest,
+    ) -> bool {
+        self.file(FileCommand {
+            document,
+            operation,
+            action: FileCommandAction::Sign { revision, request },
+        })
+    }
+    pub fn cancel_signing(&self) {
+        self.shared.sign_cancel.store(true, Ordering::Release);
     }
     pub fn save_as(
         &self,
@@ -550,6 +648,8 @@ mod request_tests {
         let engine = Engine {
             shared: Arc::new(Shared {
                 content: AtomicU64::new(0),
+                detect_cancel: AtomicBool::new(false),
+                sign_cancel: AtomicBool::new(false),
                 desired: Mutex::new(Desired::default()),
                 document: AtomicU64::new(1),
                 generation: AtomicU64::new(1),
