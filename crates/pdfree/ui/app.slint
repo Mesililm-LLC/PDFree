@@ -385,7 +385,7 @@ export component AppWindow inherits Window {
                             if root.form-detecting: Button { text: "Cancel detection"; clicked => {root.action("form-cancel-detection");} }
                         }
                         if root.form-selected: VerticalLayout {
-                            Text { text: root.form-name; wrap: word-wrap; font-weight: 600; color: #223b54; }
+                            Text { text: root.form-label=="" ? "Selected field" : root.form-label; wrap: word-wrap; font-weight: 600; color: #223b54; }
                             form-value-edit := LineEdit {
                                 property <int> focus-sequence: root.form-focus;
                                 changed focus-sequence => { if root.form-selected && root.form-value-kind<=3 {self.focus();} }
@@ -723,11 +723,12 @@ export component AppWindow inherits Window {
                         moved => {if self.pressed {root.signature-pointer(self.mouse-x/self.width,self.mouse-y/self.height,1);}}
                     }
                 }
+                Text { text: root.form-status; wrap: word-wrap; color: #805715; font-size: 12px; }
                 HorizontalLayout {
-                    Button { text: "Clear preview"; clicked => {root.action("form-sign-reset");} }
+                    Button { text: "Clear preview"; enabled: !root.file-busy; clicked => {root.action("form-sign-reset");} }
                     Rectangle { horizontal-stretch: 1; }
                     Button { text: "Cancel"; clicked => {root.action("form-sign-cancel");} }
-                    Button { text: "Place signature"; clicked => {root.action("form-sign-apply");} }
+                    Button { text: "Place signature"; enabled: !root.file-busy; clicked => {root.action("form-sign-apply");} }
                 }
             }
         }

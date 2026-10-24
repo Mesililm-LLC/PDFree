@@ -24,6 +24,7 @@ pub(crate) struct Forms {
     review_pages: std::collections::VecDeque<usize>,
     signature_strokes: Vec<Vec<[f32; 2]>>,
     signature_image: Option<Vec<u8>>,
+    signature_pending: bool,
     certificate: Option<std::path::PathBuf>,
     signed_target: Option<std::path::PathBuf>,
 }
@@ -232,10 +233,9 @@ impl State {
                             self.forms.signature_image.clone().unwrap_or_default(),
                         ),
                     };
-                    ui.set_signature_visible(false);
+                    self.forms.signature_pending = true;
                     self.forms.pending = Some((f.spec.page, f.spec.name, Some(f.id.widget)));
                     self.form_submit(ui, FormEdit::SetVisualSignature { id: f.id, mark });
-                    self.signature_reset(ui);
                 }
             }
             "form-fill" | "form-prepare" => {
@@ -955,6 +955,11 @@ impl State {
                 true
             }
             Event::Changed { document, .. } if *document == self.document => {
+                if self.forms.signature_pending {
+                    self.forms.signature_pending = false;
+                    ui.set_signature_visible(false);
+                    self.signature_reset(ui);
+                }
                 if self.forms.pending.is_none() {
                     self.forms.pending = self
                         .selected_form()
@@ -1028,6 +1033,7 @@ impl State {
             } if *document == self.document => {
                 ui.set_form_detecting(false);
                 ui.set_digital_signing(false);
+                self.forms.signature_pending = false;
                 self.forms.pending_action = None;
                 self.forms.pending = None;
                 self.forms.pending_properties = None;

@@ -233,12 +233,21 @@ fn forms_drawing_filling_and_type_conversion_use_native_history() {
         .position(|f| f.spec.kind == viewer_core::FieldKind::VisualSignature)
         .unwrap();
     ui.invoke_form_select(index as i32);
+    ui.invoke_action("form-sign-type".into());
+    ui.set_signature_text("東京".into());
+    ui.invoke_action("form-sign-apply".into());
+    wait(&mut state.borrow_mut(), &ui, |_, u| {
+        !u.get_file_busy() && u.get_form_status().contains("font")
+    });
+    assert!(ui.get_signature_visible());
+    assert_eq!(ui.get_signature_text(), "東京");
+    ui.invoke_action("form-sign-cancel".into());
     ui.invoke_action("form-sign-draw".into());
     assert!(ui.get_signature_visible());
-    ui.invoke_signature_pointer(20., 100., 0);
-    ui.invoke_signature_pointer(100., 30., 1);
-    ui.invoke_signature_pointer(240., 85., 1);
-    ui.invoke_signature_pointer(360., 45., 2);
+    ui.invoke_signature_pointer(0.05, 0.75, 0);
+    ui.invoke_signature_pointer(0.25, 0.2, 1);
+    ui.invoke_signature_pointer(0.6, 0.6, 1);
+    ui.invoke_signature_pointer(0.85, 0.3, 2);
     crate::capture::snapshot(&ui, "forms-signature-capture").unwrap();
     ui.invoke_action("form-sign-apply".into());
     wait(&mut state.borrow_mut(), &ui, |s, u| {
