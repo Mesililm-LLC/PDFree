@@ -173,12 +173,14 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                     .load_page(0)
                     .and_then(|p| p.bounds())
                     .map_err(|e| EngineError::InvalidDocument(e.to_string()))?;
-                let (signed, xfa, _) = crate::forms::security(&doc).unwrap_or((true, true, true));
+                let (signed, xfa, calculated) =
+                    crate::forms::security(&doc).unwrap_or((true, true, true));
                 let writable = !signed && !xfa;
                 let info = DocumentInfo {
                     can_form: writable
                         && crate::forms::permissions(&doc).contains(Permission::FORM),
                     can_edit: writable
+                        && !calculated
                         && crate::forms::permissions(&doc)
                             .contains(Permission::MODIFY | Permission::ANNOTATE),
                     signed,

@@ -547,6 +547,7 @@ struct Shape {
     rect: TextRect,
     closed: bool,
     round: bool,
+    native: bool,
 }
 fn raster_shapes(input: &PageInput) -> Vec<Shape> {
     // Downsample to ~150 DPI. Group horizontal runs; pair box edges only when
@@ -660,6 +661,7 @@ fn raster_shapes(input: &PageInput) -> Vec<Shape> {
                     },
                     closed: true,
                     round: false,
+                    native: false,
                 });
                 paired.insert(i);
                 paired.insert(j);
@@ -677,6 +679,7 @@ fn raster_shapes(input: &PageInput) -> Vec<Shape> {
                 },
                 closed: false,
                 round: false,
+                native: false,
             });
         }
     }
@@ -739,6 +742,7 @@ fn raster_shapes(input: &PageInput) -> Vec<Shape> {
                     },
                     closed: true,
                     round: true,
+                    native: false,
                 });
             }
         }
@@ -761,6 +765,7 @@ fn candidates(input: &PageInput, words: &[Word]) -> Vec<DetectedField> {
                 rect: r,
                 closed,
                 round: false,
+                native: true,
             }
         })
         .collect::<Vec<_>>();
@@ -768,6 +773,7 @@ fn candidates(input: &PageInput, words: &[Word]) -> Vec<DetectedField> {
         rect: *r,
         closed: true,
         round: true,
+        native: true,
     }));
     rects.extend(raster_shapes(input));
     rects.sort_by(|a, b| {
@@ -795,7 +801,10 @@ fn candidates(input: &PageInput, words: &[Word]) -> Vec<DetectedField> {
             continue;
         }
         if words.iter().any(|word| {
-            !(check && word.text.chars().count() <= 2 && overlap(r, word.rect) > 0.6)
+            !(check
+                && word.text.chars().count() <= 2
+                && overlap(r, word.rect) > 0.6
+                && overlap(word.rect, r) > 0.8)
                 && (overlap(word.rect, r) > 0.6 || overlap(r, word.rect) > 0.6)
         }) {
             continue;
@@ -859,7 +868,12 @@ fn candidates(input: &PageInput, words: &[Word]) -> Vec<DetectedField> {
         ]
         .iter()
         .any(|s| lower.contains(s));
-        if (grid && !check && !useful_label) || (!shape.closed && !useful_label) {
+        let direct_label = words.iter().any(|word| {
+            (-3. ..180.).contains(&(r.left - word.rect.right))
+                && (word.rect.top - r.top).abs() < 12.
+        });
+        if (grid && !check && (!useful_label || !direct_label)) || (!shape.closed && !useful_label)
+        {
             continue;
         }
         let tokens = lower
@@ -893,6 +907,11 @@ fn candidates(input: &PageInput, words: &[Word]) -> Vec<DetectedField> {
         } else {
             None
         };
+        // An isolated round outline is not enough evidence for a form control.
+        // In particular, letters in short words must not become checkboxes.
+        if shape.round && group.is_none() {
+            continue;
+        }
         let kind = if group.is_some() {
             FieldKind::Radio
         } else if check {
@@ -910,11 +929,14 @@ fn candidates(input: &PageInput, words: &[Word]) -> Vec<DetectedField> {
         } else {
             FieldKind::Text
         };
-        let score = if nearby.is_some() {
+        let mut score = if nearby.is_some() {
             0.76 + 0.22 * ocr_conf.max(0.)
         } else {
             0.58
         };
+        if !shape.closed && (!shape.native || w < 90.) {
+            score = score.min(0.86);
+        }
         let spec = FieldSpec {
             page: input.page,
             name: format!("{}_{}", input.name_prefix, found.len() + 1),
@@ -954,6 +976,43 @@ fn candidates(input: &PageInput, words: &[Word]) -> Vec<DetectedField> {
     }
     found
 }
+fn recheck_crop(input: &PageInput, found: &[DetectedField]) -> (PageInput, (f32, f32)) {
+    let uncertain = found
+        .iter()
+        .filter(|f| f.spec.review)
+        .map(|f| f.spec.rect)
+        .reduce(|a, b| a.union(b))
+        .expect("uncertain candidate");
+    let left = ((uncertain.left - 180.).max(0.) * input.scale).floor() as u32;
+    let top = ((uncertain.top - 50.).max(0.) * input.scale).floor() as u32;
+    let right = ((uncertain.right + 180.) * input.scale)
+        .ceil()
+        .min(input.width as f32) as u32;
+    let bottom = ((uncertain.bottom + 30.) * input.scale)
+        .ceil()
+        .min(input.height as f32) as u32;
+    let (width, height) = (right - left, bottom - top);
+    let mut gray = Vec::with_capacity(width as usize * height as usize);
+    for y in top..bottom {
+        let begin = (y * input.width + left) as usize;
+        gray.extend_from_slice(&input.gray[begin..begin + width as usize]);
+    }
+    (
+        PageInput {
+            page: input.page,
+            width,
+            height,
+            gray,
+            scale: input.scale,
+            words: vec![],
+            vectors: vec![],
+            circles: vec![],
+            blocked: vec![],
+            name_prefix: input.name_prefix.clone(),
+        },
+        (left as f32 / input.scale, top as f32 / input.scale),
+    )
+}
 fn recognize(mut input: PageInput, cancel: &AtomicBool) -> Result<Vec<DetectedField>> {
     let angle = deskew(&mut input, cancel)?;
     let words = if input.words.is_empty() {
@@ -965,7 +1024,14 @@ fn recognize(mut input: PageInput, cancel: &AtomicBool) -> Result<Vec<DetectedFi
     if found.iter().any(|f| f.spec.review) {
         // Second independent segmentation pass at the full raster resolution.
         // Existing digital text remains the authoritative label source.
-        let second = ocr(&input, 1, "11", cancel)?;
+        let (crop, offset) = recheck_crop(&input, &found);
+        let mut second = ocr(&crop, 1, "11", cancel)?;
+        for word in &mut second {
+            word.rect.left += offset.0;
+            word.rect.right += offset.0;
+            word.rect.top += offset.1;
+            word.rect.bottom += offset.1;
+        }
         let improved = candidates(&input, &second);
         found.retain(|f| {
             !f.spec.review
@@ -975,7 +1041,8 @@ fn recognize(mut input: PageInput, cancel: &AtomicBool) -> Result<Vec<DetectedFi
                 || !second.iter().any(|word| {
                     !(f.spec.kind == FieldKind::Checkbox
                         && word.text.chars().count() <= 2
-                        && overlap(f.spec.rect, word.rect) > 0.6)
+                        && overlap(f.spec.rect, word.rect) > 0.6
+                        && overlap(word.rect, f.spec.rect) > 0.8)
                         && (overlap(word.rect, f.spec.rect) > 0.6
                             || overlap(f.spec.rect, word.rect) > 0.6)
                 })
@@ -1103,11 +1170,7 @@ mod tests {
             .filter(|w| w.text != "Select one")
             .cloned()
             .collect::<Vec<_>>();
-        assert!(
-            candidates(&input, &words)
-                .iter()
-                .all(|f| f.spec.kind == FieldKind::Checkbox)
-        );
+        assert!(candidates(&input, &words).is_empty());
     }
     #[test]
     fn malformed_ocr_geometry_is_rejected() {

@@ -235,7 +235,7 @@ fn held_out_english_forms_meet_detection_precision_and_recall_gate() {
                 .map(|v| v.parse::<usize>().unwrap())
                 .collect::<Vec<_>>()
         })
-        .unwrap_or_else(|| (24..48).collect());
+        .unwrap_or_else(|| (72..96).collect());
     for index in indices.iter().copied() {
         let (path, truth) = fixture(index);
         let e = Engine::spawn(1);

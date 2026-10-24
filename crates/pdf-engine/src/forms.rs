@@ -90,7 +90,10 @@ pub(crate) fn security(doc: &PdfDocument) -> Result<(bool, bool, bool)> {
         .is_some();
     let mut signed = r.get_dict("Perms").map_err(err)?.is_some();
     for o in objects(doc)? {
-        if name(&o, "FT")? == b"Sig" && o.get_dict_inheritable("V").map_err(err)?.is_some() {
+        if name(&o, "FT")? == b"Sig"
+            && let Some(value) = o.get_dict_inheritable("V").map_err(err)?
+            && !value.is_null().map_err(err)?
+        {
             signed = true;
         }
     }
@@ -819,8 +822,117 @@ fn create(doc: &mut PdfDocument, s: &FieldSpec, all_names: &mut HashSet<String>)
         .get_dict("Annots")
         .map_err(err)?
         .unwrap_or(doc.new_array().map_err(err)?);
+    let object_id = object.as_indirect().map_err(err)?;
     annots.array_push(object).map_err(err)?;
     p.dict_put("Annots", annots).map_err(err)?;
+    dirty_widget(doc, s.page, object_id)?;
+    Ok(())
+}
+fn choice_appearance(doc: &PdfDocument, page: usize, widget: i32) -> Result<()> {
+    let native = doc.load_pdf_page(page as i32).map_err(err)?;
+    let w = native
+        .load_widget(widget)
+        .map_err(err)?
+        .ok_or("Missing list widget")?;
+    let mut field = terminal(&w.annotation().object())?;
+    let (labels, exports) = options(&field)?;
+    let mut selected = vec![];
+    if let Some(value) = field.get_dict_inheritable("V").map_err(err)? {
+        if value.is_array().map_err(err)? {
+            for i in 0..value.len().map_err(err)?.min(256) {
+                selected.push(
+                    value
+                        .get_array(i as i32)
+                        .map_err(err)?
+                        .ok_or("Invalid list value")?
+                        .as_string()
+                        .map_err(err)?,
+                );
+            }
+        } else {
+            selected.push(value.as_string().map_err(err)?);
+        }
+    }
+    let is_list = integer(&field, "Ff")? & (1 << 17) == 0;
+    let text = if is_list {
+        labels
+            .iter()
+            .zip(&exports)
+            .map(|(label, export)| {
+                format!(
+                    "[{}] {label}",
+                    if selected.contains(export) { "x" } else { " " }
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    } else {
+        selected
+            .first()
+            .map(|value| {
+                exports
+                    .iter()
+                    .position(|export| export == value)
+                    .and_then(|i| labels.get(i))
+                    .cloned()
+                    .unwrap_or_else(|| value.clone())
+            })
+            .unwrap_or_default()
+    };
+    let saved = ["FT", "Ff", "V"]
+        .into_iter()
+        .map(|key| Ok((key, field.get_dict(key).map_err(err)?)))
+        .collect::<Result<Vec<_>>>()?;
+    // MuPDF's list renderer does not highlight selections. Generate a Unicode
+    // text appearance through its public widget API, then restore the original
+    // choice schema and values. Standard readers retain a real list widget.
+    let result = (|| -> Result<()> {
+        put_name(doc, &mut field, "FT", "Tx")?;
+        let flags = integer(&field, "Ff")?;
+        put_int(
+            doc,
+            &mut field,
+            "Ff",
+            (flags & 3) | if is_list { 1 << 12 } else { 0 },
+        )?;
+        put_text(doc, &mut field, "V", &text)?;
+        let mut annotation = w.into_annotation();
+        let rect = annotation.rect().map_err(err)?;
+        annotation.set_rect(rect).map_err(err)?;
+        annotation.update().map_err(err)?;
+        Ok(())
+    })();
+    for (key, value) in saved {
+        if let Some(value) = value {
+            field.dict_put(key, value).map_err(err)?;
+        } else {
+            field.dict_delete(key).map_err(err)?;
+        }
+    }
+    result
+}
+fn dirty_widget(doc: &PdfDocument, page: usize, widget: i32) -> Result<()> {
+    let native = doc.load_pdf_page(page as i32).map_err(err)?;
+    let widget = native
+        .load_widget(widget)
+        .map_err(err)?
+        .ok_or("Missing authored widget")?;
+    if matches!(
+        widget.r#type().map_err(err)?,
+        WidgetType::Listbox | WidgetType::Combobox
+    ) {
+        return choice_appearance(doc, page, widget.xref().map_err(err)?);
+    }
+    if matches!(
+        widget.r#type().map_err(err)?,
+        WidgetType::Text | WidgetType::Combobox
+    ) {
+        // Public setters notify MuPDF's appearance scheduler; raw dictionary
+        // writes alone do not set resynth_required. Geometry remains unchanged.
+        let mut annotation = widget.into_annotation();
+        let rect = annotation.rect().map_err(err)?;
+        annotation.set_rect(rect).map_err(err)?;
+    }
     Ok(())
 }
 fn regenerate(doc: &mut PdfDocument) -> Result<()> {
@@ -917,7 +1029,11 @@ fn set_value(
         for mut linked in p.widgets() {
             let o = terminal(&linked.annotation().object())?;
             if o.as_indirect().map_err(err)? == id.field {
-                linked.update().map_err(err)?;
+                if matches!(f.spec.kind, FieldKind::List | FieldKind::Dropdown) {
+                    choice_appearance(doc, index as usize, linked.xref().map_err(err)?)?;
+                } else {
+                    linked.update().map_err(err)?;
+                }
             }
         }
         p.update().map_err(err)?;
@@ -970,6 +1086,9 @@ pub(crate) fn apply(doc: &mut PdfDocument, edit: &FormEdit) -> Result<usize> {
             Ok(page)
         }
         FormEdit::Create(specs) => {
+            if security(doc)?.2 {
+                return Err("Calculated forms are read-only for field authoring.".into());
+            }
             if !permissions(doc).contains(Permission::MODIFY | Permission::ANNOTATE) {
                 return Err("This PDF does not permit creating form fields.".into());
             }
@@ -1017,6 +1136,9 @@ pub(crate) fn apply(doc: &mut PdfDocument, edit: &FormEdit) -> Result<usize> {
             if spec.page != f.spec.page || spec.name != f.spec.name {
                 return Err("Keep this field's name and page when updating.".into());
             }
+            let compatible_choices = matches!(f.spec.kind, FieldKind::Dropdown | FieldKind::List)
+                && matches!(spec.kind, FieldKind::Dropdown | FieldKind::List)
+                && spec.options == f.spec.options;
             if !f.is_empty() {
                 let mut s = spec.clone();
                 if matches!(
@@ -1029,10 +1151,19 @@ pub(crate) fn apply(doc: &mut PdfDocument, edit: &FormEdit) -> Result<usize> {
                 {
                     return Err("Clear the field's value before changing its type.".into());
                 }
-                s.options = spec.options.clone();
+                s.options = if compatible_choices {
+                    f.export_values.clone()
+                } else {
+                    spec.options.clone()
+                };
                 s.validate_value(&f.value)?;
             }
             let mut o = doc.new_indirect(id.field, 0).map_err(err)?;
+            let preserved_options = if compatible_choices {
+                o.get_dict_inheritable("Opt").map_err(err)?
+            } else {
+                None
+            };
             if f.spec.kind == FieldKind::Radio && spec.kind == FieldKind::Radio {
                 if spec.group != f.spec.group {
                     return Err("Keep this radio button in its existing group.".into());
@@ -1105,6 +1236,7 @@ pub(crate) fn apply(doc: &mut PdfDocument, edit: &FormEdit) -> Result<usize> {
                     .array_push(doc.new_indirect(id.widget, 0).map_err(err)?)
                     .map_err(err)?;
                 form.dict_put("Fields", fields).map_err(err)?;
+                dirty_widget(doc, spec.page, id.widget)?;
                 regenerate(doc)?;
                 return Ok(spec.page);
             }
@@ -1153,6 +1285,10 @@ pub(crate) fn apply(doc: &mut PdfDocument, edit: &FormEdit) -> Result<usize> {
             let mut unlocked = spec.clone();
             unlocked.read_only = false;
             configure(doc, &mut o, &unlocked)?;
+            if let Some(options) = preserved_options {
+                o.dict_put("Opt", options).map_err(err)?;
+            }
+            dirty_widget(doc, spec.page, id.widget)?;
             regenerate(doc)?;
             if !f.is_empty() {
                 set_value(doc, *id, &f.value, false)?;

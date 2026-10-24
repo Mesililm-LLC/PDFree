@@ -65,6 +65,15 @@ fn forms_drawing_filling_and_type_conversion_use_native_history() {
         .dispatch_event(WindowEvent::ScaleFactorChanged { scale_factor: 1.5 });
     ui.window().set_size(slint::LogicalSize::new(1180., 850.));
     state.borrow_mut().tick(&ui);
+    // Resolve the form sidebar and DPI layout before converting window points.
+    let mut buffer = vec![slint::Rgb8Pixel::default(); 1770 * 1275];
+    window.draw_if_needed(|r| {
+        r.render(&mut buffer, 1770);
+    });
+    state.borrow_mut().tick(&ui);
+    window.draw_if_needed(|r| {
+        r.render(&mut buffer, 1770);
+    });
     let p = state.borrow().layout.pages[0];
     let scale = state.borrow().zoom * 96. / 72.;
     let offset_x = 1180. - ui.get_view_width();
@@ -166,11 +175,7 @@ fn forms_drawing_filling_and_type_conversion_use_native_history() {
                 .values()
                 .flatten()
                 .next()
-                .unwrap()
-                .spec
-                .rect
-                .right
-                > before.right
+                .is_some_and(|f| f.spec.rect.right > before.right)
     });
     // Tab leaves a text draft as one history operation, then selects the next field.
     ui.invoke_action("form-duplicate".into());
@@ -211,6 +216,9 @@ fn forms_drawing_filling_and_type_conversion_use_native_history() {
                 .flatten()
                 .any(|f| f.value.text() == "Draft survives scrolling")
     });
+    wait(&mut state.borrow_mut(), &ui, |_, u| {
+        u.get_tiles().row_count() > 0
+    });
     crate::capture::snapshot(&ui, "forms-fill").unwrap();
     // Visual capture uses the same callbacks as the signature canvas.
     ui.invoke_action("form-prepare".into());
@@ -248,6 +256,9 @@ fn forms_drawing_filling_and_type_conversion_use_native_history() {
     ui.invoke_signature_pointer(0.25, 0.2, 1);
     ui.invoke_signature_pointer(0.6, 0.6, 1);
     ui.invoke_signature_pointer(0.85, 0.3, 2);
+    wait(&mut state.borrow_mut(), &ui, |_, u| {
+        u.get_tiles().row_count() > 0
+    });
     crate::capture::snapshot(&ui, "forms-signature-capture").unwrap();
     ui.invoke_action("form-sign-apply".into());
     wait(&mut state.borrow_mut(), &ui, |s, u| {
@@ -285,7 +296,13 @@ fn forms_drawing_filling_and_type_conversion_use_native_history() {
     ui.invoke_form_select(radios[1].0 as i32);
     ui.set_form_checked(true);
     ui.invoke_action("form-toggle".into());
-    wait(&mut state.borrow_mut(), &ui, |_, u| !u.get_file_busy());
+    wait(&mut state.borrow_mut(), &ui, |_, u| {
+        !u.get_file_busy()
+            && u.get_form_selected()
+            && u.get_form_surfaces()
+                .iter()
+                .any(|f| f.selected && f.index == radios[1].0 as i32)
+    });
     let surfaces = ui.get_form_surfaces();
     assert!(
         surfaces
@@ -296,6 +313,68 @@ fn forms_drawing_filling_and_type_conversion_use_native_history() {
     ui.window().set_size(slint::LogicalSize::new(680., 480.));
     state.borrow_mut().tick(&ui);
     crate::capture::snapshot(&ui, "forms-small").unwrap();
+}
+
+#[test]
+fn invalid_form_drafts_do_not_resume_failed_close_or_open_requests() {
+    let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
+    slint::platform::set_platform(Box::new(TestPlatform {
+        window,
+        clipboard: Rc::new(RefCell::new(String::new())),
+    }))
+    .unwrap();
+    let ui = AppWindow::new().unwrap();
+    ui.show().unwrap();
+    let mut state = State::new(Trace::new(Instant::now(), None).unwrap(), false);
+    state.open(&ui, fixture("blank.pdf"));
+    wait(&mut state, &ui, |_, u| u.get_ready());
+    state.action(&ui, "form-prepare");
+    state.submit_edit(
+        &ui,
+        pdf_engine::EditCommand::Form(viewer_core::FormEdit::Create(vec![
+            viewer_core::FieldSpec {
+                page: 0,
+                name: "date".into(),
+                label: "Date".into(),
+                kind: viewer_core::FieldKind::Date,
+                rect: viewer_core::TextRect {
+                    left: 40.,
+                    top: 40.,
+                    right: 240.,
+                    bottom: 66.,
+                },
+                required: false,
+                read_only: false,
+                options: vec![],
+                group: String::new(),
+                review: false,
+                date_format: "YYYY-MM-DD".into(),
+                decimals: 2,
+            },
+        ])),
+    );
+    wait(&mut state, &ui, |s, u| {
+        !u.get_file_busy() && s.forms.records.values().flatten().count() == 1
+    });
+    state.form_select(&ui, 0);
+    let document = state.document;
+    ui.set_form_value("invalid date".into());
+    assert!(state.form_before_close(&ui));
+    assert!(state.form_before_open(&ui, &fixture("office.pdf")));
+    assert!(!ui.get_file_busy());
+    ui.set_form_value("2030-01-01".into());
+    state.action(&ui, "form-commit");
+    wait(&mut state, &ui, |s, u| {
+        !u.get_file_busy()
+            && u.get_form_selected()
+            && s.forms
+                .records
+                .values()
+                .flatten()
+                .any(|f| f.value.text() == "2030-01-01")
+    });
+    assert_eq!(state.document, document);
+    assert!(!ui.get_pending_open());
 }
 
 struct TestPlatform {
@@ -321,6 +400,7 @@ fn fixture(name: &str) -> PathBuf {
         .join("../../tests/corpus")
         .join(name)
 }
+#[track_caller]
 fn wait(state: &mut State, ui: &AppWindow, condition: impl Fn(&State, &AppWindow) -> bool) {
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
@@ -329,12 +409,16 @@ fn wait(state: &mut State, ui: &AppWindow, condition: impl Fn(&State, &AppWindow
         if condition(state, ui) {
             break;
         }
+        if Instant::now() >= deadline {
+            let _ = crate::capture::snapshot(ui, "forms-failure");
+        }
         assert!(
             Instant::now() < deadline,
-            "Reader flow timed out: {} / {} / {}",
+            "Reader flow timed out: {} / {} / {} / forms: {}",
             ui.get_status(),
             ui.get_search_status(),
-            ui.get_file_message()
+            ui.get_file_message(),
+            ui.get_form_status()
         );
         std::thread::sleep(Duration::from_millis(5));
     }

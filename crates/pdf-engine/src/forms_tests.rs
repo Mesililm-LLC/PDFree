@@ -425,10 +425,25 @@ fn list_selection_indices_are_unique_and_sorted_in_option_order() {
         &mut d,
         &FormEdit::SetValue {
             id: f.id,
+            value: FormValue::Selection(vec!["Red".into()]),
+        },
+    )
+    .unwrap();
+    let before = appearances(&d, f.id).unwrap();
+    apply(
+        &mut d,
+        &FormEdit::SetValue {
+            id: f.id,
             value: FormValue::Selection(vec!["Blue".into(), "Red".into(), "Blue".into()]),
         },
     )
     .unwrap();
+    let after = appearances(&d, f.id).unwrap();
+    assert!(!after.is_empty());
+    assert_ne!(
+        before, after,
+        "List appearance did not reflect the new selection"
+    );
     let o = d.new_indirect(f.id.field, 0).unwrap();
     let indices = o.get_dict("I").unwrap().unwrap();
     assert_eq!(indices.len().unwrap(), 2);
@@ -438,6 +453,7 @@ fn list_selection_indices_are_unique_and_sorted_in_option_order() {
         page(&d, 0).unwrap()[0].value,
         FormValue::Selection(vec!["Red".into(), "Blue".into()])
     );
+    export(&d, "list-selections.pdf");
 }
 
 #[test]
@@ -463,4 +479,70 @@ fn authoring_preserves_existing_inherited_default_appearance() {
         .unwrap(),
         "/PDFreeHelv 18 Tf 1 0 0 rg"
     );
+}
+
+#[test]
+fn null_signature_values_are_unsigned_and_calculated_forms_reject_authoring() {
+    let mut d = blank();
+    apply(
+        &mut d,
+        &FormEdit::Create(vec![spec(FieldKind::DigitalSignature, "unsigned", 40.)]),
+    )
+    .unwrap();
+    let f = page(&d, 0).unwrap().remove(0);
+    d.new_indirect(f.id.field, 0)
+        .unwrap()
+        .dict_put("V", d.new_null())
+        .unwrap();
+    assert!(!security(&d).unwrap().0);
+    assert!(page(&d, 0).unwrap()[0].signable);
+    let mut form = root(&d).unwrap().get_dict("AcroForm").unwrap().unwrap();
+    form.dict_put("CO", d.new_array().unwrap()).unwrap();
+    assert!(
+        apply(
+            &mut d,
+            &FormEdit::Create(vec![spec(FieldKind::Text, "blocked", 90.)])
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn choice_properties_preserve_distinct_export_and_display_values() {
+    let mut d = blank();
+    let mut s = spec(FieldKind::Dropdown, "currency", 40.);
+    s.options = vec!["US Dollar".into(), "Euro".into()];
+    apply(&mut d, &FormEdit::Create(vec![s])).unwrap();
+    let f = page(&d, 0).unwrap().remove(0);
+    let mut o = d.new_indirect(f.id.field, 0).unwrap();
+    o.dict_put(
+        "Opt",
+        d.new_object_from_str("[[(USD)(US Dollar)] [(EUR)(Euro)]]")
+            .unwrap(),
+    )
+    .unwrap();
+    apply(
+        &mut d,
+        &FormEdit::SetValue {
+            id: f.id,
+            value: FormValue::Text("USD".into()),
+        },
+    )
+    .unwrap();
+    let mut spec = page(&d, 0).unwrap().remove(0).spec;
+    spec.read_only = true;
+    apply(&mut d, &FormEdit::Update { id: f.id, spec }).unwrap();
+    let f = page(&d, 0).unwrap().remove(0);
+    assert_eq!(f.value.text(), "USD");
+    assert_eq!(f.export_values, vec!["USD", "EUR"]);
+    assert!(
+        appearances(&d, f.id)
+            .unwrap()
+            .iter()
+            .any(|(_, content)| String::from_utf8_lossy(content).contains("US Dollar"))
+    );
+    assert_eq!(f.spec.options, vec!["US Dollar", "Euro"]);
+    assert!(!f.editable);
+    verify(&d, &PdfDocument::from_bytes(&bytes(&d)).unwrap()).unwrap();
+    export(&d, "choice-export-values.pdf");
 }

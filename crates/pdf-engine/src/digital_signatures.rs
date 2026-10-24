@@ -61,6 +61,9 @@ impl SourceStamp {
         if !m.is_file() {
             return Err("Signing requires a regular PDF file.".into());
         }
+        if m.len() > MAX_PDF as u64 {
+            return Err("The file exceeds the signing size limit.".into());
+        }
         let bytes = read_bounded(path, MAX_PDF)?;
         let digest = platform::digest(&bytes)?;
         let after = fs::metadata(path).map_err(err)?;
@@ -119,7 +122,9 @@ fn unique_match(bytes: &[u8], needle: &[u8]) -> Result<usize> {
 }
 fn reserve(doc: &mut PdfDocument, id: FieldRef, signer: &str) -> Result<()> {
     let mut field = doc.new_indirect(id.field, 0).map_err(err)?;
-    if field.get_dict_inheritable("V").map_err(err)?.is_some() {
+    if let Some(value) = field.get_dict_inheritable("V").map_err(err)?
+        && !value.is_null().map_err(err)?
+    {
         return Err("This signature field already has a value.".into());
     }
     if field.get_dict_inheritable("SV").map_err(err)?.is_some()

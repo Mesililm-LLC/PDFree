@@ -90,16 +90,26 @@ impl State {
         }
     }
     pub(super) fn form_before_close(&mut self, ui: &AppWindow) -> bool {
+        if ui.get_file_busy() {
+            return true;
+        }
         if self.form_commit(ui) {
-            self.forms.close_after_commit = true;
+            if ui.get_file_busy() {
+                self.forms.close_after_commit = true;
+            }
             true
         } else {
             false
         }
     }
     pub(super) fn form_before_open(&mut self, ui: &AppWindow, path: &std::path::Path) -> bool {
+        if ui.get_file_busy() {
+            return true;
+        }
         if self.form_commit(ui) {
-            self.forms.open_after_commit = Some(path.to_path_buf());
+            if ui.get_file_busy() {
+                self.forms.open_after_commit = Some(path.to_path_buf());
+            }
             true
         } else {
             false
@@ -173,7 +183,9 @@ impl State {
         }
         if !action.starts_with("form-") {
             if ui.get_form_mode() > 0 && self.form_commit(ui) {
-                self.forms.pending_action = Some(action.into());
+                if ui.get_file_busy() {
+                    self.forms.pending_action = Some(action.into());
+                }
                 return true;
             }
             if matches!(action, "annotate-note" | "annotate-highlight") {
@@ -202,6 +214,15 @@ impl State {
                     && f.editable
                 {
                     self.signature_reset(ui);
+                    ui.set_file_message("".into());
+                    self.form_error(
+                        ui,
+                        if action == "form-sign-type" {
+                            "Enter the visible signature text."
+                        } else {
+                            "Draw your visual signature in the preview."
+                        },
+                    );
                     ui.set_signature_mode(if action == "form-sign-type" { 0 } else { 1 });
                     ui.set_signature_visible(true);
                 }
@@ -247,7 +268,9 @@ impl State {
                     return true;
                 }
                 if self.form_commit(ui) {
-                    self.forms.pending_action = Some(action.into());
+                    if ui.get_file_busy() {
+                        self.forms.pending_action = Some(action.into());
+                    }
                     return true;
                 }
                 self.forms.review_only = false;
@@ -259,7 +282,9 @@ impl State {
             }
             "form-close" => {
                 if self.form_commit(ui) {
-                    self.forms.pending_action = Some(action.into());
+                    if ui.get_file_busy() {
+                        self.forms.pending_action = Some(action.into());
+                    }
                 } else {
                     ui.set_form_mode(0);
                     ui.set_form_draw(false);
@@ -268,7 +293,9 @@ impl State {
             }
             "form-new" => {
                 if self.form_commit(ui) {
-                    self.forms.pending_action = Some(action.into());
+                    if ui.get_file_busy() {
+                        self.forms.pending_action = Some(action.into());
+                    }
                 } else {
                     self.forms.selected = None;
                     ui.set_form_selected(false);
@@ -319,7 +346,9 @@ impl State {
             }
             "form-next" | "form-previous" | "form-review" => {
                 if self.form_commit(ui) {
-                    self.forms.pending_action = Some(action.into());
+                    if ui.get_file_busy() {
+                        self.forms.pending_action = Some(action.into());
+                    }
                     return true;
                 }
                 if action == "form-review" {
@@ -421,7 +450,9 @@ impl State {
             return;
         };
         if self.forms.selected != Some(f.id) && self.form_commit(ui) {
-            self.forms.pending = Some((f.spec.page, f.spec.name, Some(f.id.widget)));
+            if ui.get_file_busy() {
+                self.forms.pending = Some((f.spec.page, f.spec.name, Some(f.id.widget)));
+            }
             return;
         }
         self.forms.selected = Some(f.id);
@@ -563,7 +594,9 @@ impl State {
         } else {
             self.navigate(ui, next);
             self.forms.wanted.clear();
-            self.forms.pending_action = Some(action.into());
+            if ui.get_file_busy() {
+                self.forms.pending_action = Some(action.into());
+            }
         }
     }
 
