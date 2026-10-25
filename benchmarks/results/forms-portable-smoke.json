@@ -1,0 +1,13 @@
+{
+  "release_sha256": "75b9f813b7faa7e866353f36c2f4c8cdcaa712a9e0332e58b9019bacf03e00f9",
+  "release_bytes": 40147968,
+  "optimized_build_passed": true,
+  "packaged_ocr_without_override_passed": true,
+  "packaged_app_exit_code": 0,
+  "native_capture_inspected": true,
+  "workspace_tests_passed": 85,
+  "format_passed": true,
+  "strict_clippy_passed": true,
+  "physical_presentation_verified": false,
+  "physical_printing_verified": false
+}
