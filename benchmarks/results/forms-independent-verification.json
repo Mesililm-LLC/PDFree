@@ -1,0 +1,168 @@
+{
+  "parser": "pypdf",
+  "parser_version": "6.1.1",
+  "renderer": "PDFium",
+  "checks": [
+    {
+      "file": "linked-widgets.pdf",
+      "sha256": "a354a7ec03ec0b30f5c1fd4e16e2b9f873d2b771c0d5a2a825b8e953b586d15c",
+      "pages": 2,
+      "encrypted": false,
+      "fields": 1,
+      "renders": [
+        {
+          "page": 1,
+          "mode": "screen",
+          "ink_pixels": 585,
+          "image": "linked-widgets-1-screen-pdfium.png"
+        },
+        {
+          "page": 1,
+          "mode": "print",
+          "ink_pixels": 585,
+          "image": "linked-widgets-1-print-pdfium.png"
+        },
+        {
+          "page": 2,
+          "mode": "screen",
+          "ink_pixels": 585,
+          "image": "linked-widgets-2-screen-pdfium.png"
+        },
+        {
+          "page": 2,
+          "mode": "print",
+          "ink_pixels": 585,
+          "image": "linked-widgets-2-print-pdfium.png"
+        }
+      ]
+    },
+    {
+      "file": "list-selections.pdf",
+      "sha256": "ed7902e784eefdb8cbcee06672ef207bcad0e2cc2cf1d4a4d3a8bf668cf55d34",
+      "pages": 1,
+      "encrypted": false,
+      "fields": 1,
+      "renders": [
+        {
+          "page": 1,
+          "mode": "screen",
+          "ink_pixels": 1380,
+          "image": "list-selections-1-screen-pdfium.png"
+        },
+        {
+          "page": 1,
+          "mode": "print",
+          "ink_pixels": 1380,
+          "image": "list-selections-1-print-pdfium.png"
+        }
+      ]
+    },
+    {
+      "file": "choice-export-values.pdf",
+      "sha256": "4304a83331afe95dd1f72005328c42c121b439d80de9f9905056968fa21bcb6d",
+      "pages": 1,
+      "encrypted": false,
+      "fields": 1,
+      "renders": [
+        {
+          "page": 1,
+          "mode": "screen",
+          "ink_pixels": 675,
+          "image": "choice-export-values-1-screen-pdfium.png"
+        },
+        {
+          "page": 1,
+          "mode": "print",
+          "ink_pixels": 675,
+          "image": "choice-export-values-1-print-pdfium.png"
+        }
+      ]
+    },
+    {
+      "file": "encrypted-filled.pdf",
+      "sha256": "4a4fc46348f755a06a369cca6a252c2bea1b1cd8fc7d088ae0454c54190b893a",
+      "pages": 1,
+      "encrypted": true,
+      "fields": 1,
+      "renders": [
+        {
+          "page": 1,
+          "mode": "screen",
+          "ink_pixels": 248,
+          "image": "encrypted-filled-1-screen-pdfium.png"
+        },
+        {
+          "page": 1,
+          "mode": "print",
+          "ink_pixels": 248,
+          "image": "encrypted-filled-1-print-pdfium.png"
+        }
+      ]
+    },
+    {
+      "file": "visual-signatures-rotated.pdf",
+      "sha256": "e7a76a04771f21f411231949c2f616470e12cba114e0227677b9ba178fd5486b",
+      "pages": 1,
+      "encrypted": false,
+      "fields": 0,
+      "renders": [
+        {
+          "page": 1,
+          "mode": "screen",
+          "ink_pixels": 12237,
+          "image": "visual-signatures-rotated-1-screen-pdfium.png"
+        },
+        {
+          "page": 1,
+          "mode": "print",
+          "ink_pixels": 12237,
+          "image": "visual-signatures-rotated-1-print-pdfium.png"
+        }
+      ]
+    },
+    {
+      "file": "digitally-signed.pdf",
+      "sha256": "a4fa71dfa9832fcc25bae45f823778dffc225c18f34c5f5a7a9851c1522456d0",
+      "pages": 1,
+      "encrypted": false,
+      "fields": 1,
+      "renders": [
+        {
+          "page": 1,
+          "mode": "screen",
+          "ink_pixels": 0,
+          "image": "digitally-signed-1-screen-pdfium.png"
+        },
+        {
+          "page": 1,
+          "mode": "print",
+          "ink_pixels": 0,
+          "image": "digitally-signed-1-print-pdfium.png"
+        }
+      ]
+    },
+    {
+      "file": "digitally-signed-encrypted.pdf",
+      "sha256": "5b808625e17e4e0d126519c82ad8354fc653c29aef0c41f590c12b84b44d41f2",
+      "pages": 1,
+      "encrypted": true,
+      "fields": 1,
+      "renders": [
+        {
+          "page": 1,
+          "mode": "screen",
+          "ink_pixels": 0,
+          "image": "digitally-signed-encrypted-1-screen-pdfium.png"
+        },
+        {
+          "page": 1,
+          "mode": "print",
+          "ink_pixels": 0,
+          "image": "digitally-signed-encrypted-1-print-pdfium.png"
+        }
+      ]
+    }
+  ],
+  "physical_printing_verified": false,
+  "certificate_trust_evaluated": false
+}

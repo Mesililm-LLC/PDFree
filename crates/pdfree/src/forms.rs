@@ -765,13 +765,11 @@ impl State {
                 .sum::<usize>()
                 < 16_384
             && let Some(line) = self.forms.signature_strokes.last_mut()
-        {
-            if line
+            && line
                 .last()
                 .is_none_or(|last| (last[0] - p[0]).abs() + (last[1] - p[1]).abs() > 0.001)
-            {
-                line.push(p);
-            }
+        {
+            line.push(p);
         }
         let mut pixels = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(420, 140);
         for pixel in pixels.make_mut_slice() {

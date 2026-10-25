@@ -512,7 +512,7 @@ fn label(words: &[Word], r: TextRect, checkbox: bool) -> Option<(String, f32)> {
             let right = w.rect.left - r.right;
             let distance = if checkbox && (-2. ..180.).contains(&right) && vertical < 14. {
                 right + vertical * 2.
-            } else if (-3. ..180.).contains(&left) && vertical < 22. {
+            } else if (-3. ..300.).contains(&left) && vertical < 22. {
                 left + vertical * 2.
             } else if (-3. ..28.).contains(&above)
                 && w.rect.left < r.right
@@ -869,7 +869,7 @@ fn candidates(input: &PageInput, words: &[Word]) -> Vec<DetectedField> {
         .iter()
         .any(|s| lower.contains(s));
         let direct_label = words.iter().any(|word| {
-            (-3. ..180.).contains(&(r.left - word.rect.right))
+            (-3. ..300.).contains(&(r.left - word.rect.right))
                 && (word.rect.top - r.top).abs() < 12.
         });
         if (grid && !check && (!useful_label || !direct_label)) || (!shape.closed && !useful_label)
@@ -983,7 +983,7 @@ fn recheck_crop(input: &PageInput, found: &[DetectedField]) -> (PageInput, (f32,
         .map(|f| f.spec.rect)
         .reduce(|a, b| a.union(b))
         .expect("uncertain candidate");
-    let left = ((uncertain.left - 180.).max(0.) * input.scale)
+    let left = ((uncertain.left - 300.).max(0.) * input.scale)
         .floor()
         .min(input.width.saturating_sub(1) as f32) as u32;
     let top = ((uncertain.top - 50.).max(0.) * input.scale)
@@ -1095,9 +1095,9 @@ mod tests {
     #[test]
     fn labeled_blank_box_is_detected_and_existing_fields_are_excluded() {
         let r = TextRect {
-            left: 100.,
+            left: 280.,
             top: 40.,
-            right: 300.,
+            right: 380.,
             bottom: 62.,
         };
         let mut input = PageInput {
