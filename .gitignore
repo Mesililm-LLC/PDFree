@@ -6,3 +6,4 @@
 /tests/corpus/downloads/
 /*.log
 __pycache__/
+*.pdf
