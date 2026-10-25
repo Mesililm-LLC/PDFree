@@ -20,6 +20,8 @@ folder = args.directory.resolve()
 checks = []
 for name, password in [
     ("linked-widgets.pdf", None),
+    ("list-selections.pdf", None),
+    ("choice-export-values.pdf", None),
     ("encrypted-filled.pdf", "reader"),
     ("visual-signatures-rotated.pdf", None),
     ("digitally-signed.pdf", None),
@@ -38,6 +40,16 @@ for name, password in [
         assert len(widgets) == 2
         assert widgets[0]["/Parent"].indirect_reference == widgets[1]["/Parent"].indirect_reference
         assert all(w["/AP"]["/N"].get_data() for w in widgets)
+    elif name == "list-selections.pdf":
+        choices = [f for f in fields.values() if f.get("/FT") == "/Ch"]
+        assert len(choices) == 1
+        assert list(choices[0]["/V"]) == ["Red", "Blue"]
+        assert list(widgets[0]["/I"]) == [0, 2]
+        assert all(w["/AP"]["/N"].get_data() for w in widgets)
+    elif name == "choice-export-values.pdf":
+        assert fields["currency"]["/V"] == "USD"
+        assert list(fields["currency"]["/Opt"][0]) == ["USD", "US Dollar"]
+        assert any(b"US Dollar" in w["/AP"]["/N"].get_data() for w in widgets)
     elif name == "encrypted-filled.pdf":
         assert fields["restricted"]["/V"] == "Off"
         assert reader.is_encrypted

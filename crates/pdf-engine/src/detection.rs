@@ -811,7 +811,7 @@ fn candidates(input: &PageInput, words: &[Word]) -> Vec<DetectedField> {
         }
         let nearby = label(words, r, check);
         let (label, ocr_conf) = nearby.clone().unwrap_or(("Field".into(), 0.4));
-        if nearby.is_none() && !check && w < 60. {
+        if !check && w < 60. && (!shape.closed || nearby.is_none()) {
             continue;
         }
         let lower = label.to_ascii_lowercase();
@@ -983,14 +983,18 @@ fn recheck_crop(input: &PageInput, found: &[DetectedField]) -> (PageInput, (f32,
         .map(|f| f.spec.rect)
         .reduce(|a, b| a.union(b))
         .expect("uncertain candidate");
-    let left = ((uncertain.left - 180.).max(0.) * input.scale).floor() as u32;
-    let top = ((uncertain.top - 50.).max(0.) * input.scale).floor() as u32;
+    let left = ((uncertain.left - 180.).max(0.) * input.scale)
+        .floor()
+        .min(input.width.saturating_sub(1) as f32) as u32;
+    let top = ((uncertain.top - 50.).max(0.) * input.scale)
+        .floor()
+        .min(input.height.saturating_sub(1) as f32) as u32;
     let right = ((uncertain.right + 180.) * input.scale)
         .ceil()
-        .min(input.width as f32) as u32;
+        .clamp((left + 1) as f32, input.width as f32) as u32;
     let bottom = ((uncertain.bottom + 30.) * input.scale)
         .ceil()
-        .min(input.height as f32) as u32;
+        .clamp((top + 1) as f32, input.height as f32) as u32;
     let (width, height) = (right - left, bottom - top);
     let mut gray = Vec::with_capacity(width as usize * height as usize);
     for y in top..bottom {
