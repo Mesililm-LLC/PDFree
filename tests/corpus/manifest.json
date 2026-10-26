@@ -11,70 +11,49 @@
     "sha256": "5a9c1086b3a09398f31d47f6235e02d986a4bd700076b5122bcf857a80beb895",
     "bytes": 28624,
     "provenance": "Original deterministic PDFree fixture; scripts/generate-corpus.py",
-    "license": "AGPL-3.0-only",
-    "encrypted": false,
-    "pages": 100,
-    "embedded_fonts": false
+    "license": "AGPL-3.0-only"
   },
   {
     "file": "office.pdf",
     "sha256": "1d292405900c46ec9a61433e7cd62501762613ef9c777699a05d3aa23582e70c",
     "bytes": 5931,
     "provenance": "Original deterministic PDFree fixture; scripts/generate-corpus.py",
-    "license": "AGPL-3.0-only",
-    "encrypted": false,
-    "pages": 20,
-    "embedded_fonts": false
+    "license": "AGPL-3.0-only"
   },
   {
     "file": "scan.pdf",
     "sha256": "768fd4f2cfeebd7c6e7c20a17495fa01d7102f4721ec36c69128922d22b00def",
     "bytes": 70138,
     "provenance": "Original deterministic PDFree fixture; scripts/generate-corpus.py",
-    "license": "AGPL-3.0-only",
-    "encrypted": false,
-    "pages": 200,
-    "embedded_fonts": false
+    "license": "AGPL-3.0-only"
   },
   {
     "file": "text.pdf",
     "sha256": "2909832719e1292809df2e5a7503892edf28ca28e716f0f818d245b43d0837d7",
     "bytes": 604,
     "provenance": "Original deterministic PDFree fixture; scripts/generate-corpus.py",
-    "license": "AGPL-3.0-only",
-    "encrypted": false,
-    "pages": 1,
-    "embedded_fonts": false
+    "license": "AGPL-3.0-only"
   },
   {
     "file": "thousand.pdf",
     "sha256": "73efe21724446b7bbe67560a78955cb72935136e883db63389297715602a1fda",
     "bytes": 288037,
     "provenance": "Original deterministic PDFree fixture; scripts/generate-corpus.py",
-    "license": "AGPL-3.0-only",
-    "encrypted": false,
-    "pages": 1000,
-    "embedded_fonts": false
+    "license": "AGPL-3.0-only"
   },
   {
     "file": "transparency.pdf",
     "sha256": "ee8555a6b8dd6462b9d71322121b694c745572524e73e7aa847792482494a7d5",
     "bytes": 751,
     "provenance": "Original deterministic PDFree fixture; scripts/generate-corpus.py",
-    "license": "AGPL-3.0-only",
-    "encrypted": false,
-    "pages": 1,
-    "embedded_fonts": false
+    "license": "AGPL-3.0-only"
   },
   {
     "file": "vector.pdf",
     "sha256": "ae9551d05674aac2d8f6ca4de91ce0486dc8169c33bff5eab8424a3cb8abc6e2",
     "bytes": 256486,
     "provenance": "Original deterministic PDFree fixture; scripts/generate-corpus.py",
-    "license": "AGPL-3.0-only",
-    "encrypted": false,
-    "pages": 1,
-    "embedded_fonts": false
+    "license": "AGPL-3.0-only"
   },
   {
     "file": "encrypted.pdf",
@@ -155,5 +134,12 @@
     "pages": 2,
     "encrypted": false,
     "embedded_fonts": false
+  },
+  {
+    "file": "flat-form.pdf",
+    "sha256": "69062ec3802d58ca81f1159190de505613de1d05d5b8d2a120983cac6a59a9c4",
+    "bytes": 1561,
+    "provenance": "Original deterministic PDFree fixture; scripts/generate-corpus.py",
+    "license": "AGPL-3.0-only"
   }
 ]

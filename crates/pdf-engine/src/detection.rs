@@ -34,6 +34,9 @@ struct PageInput {
     scale: f32,
     words: Vec<Word>,
     vectors: Vec<TextRect>,
+    // Underscore runs printed as text (flat print-to-PDF forms). Each rect is
+    // the baseline of one run; candidates expand it into a field above it.
+    blanks: Vec<TextRect>,
     circles: Vec<TextRect>,
     blocked: Vec<TextRect>,
     name_prefix: String,
@@ -156,42 +159,46 @@ fn snapshot(doc: &PdfDocument, page: usize, name_prefix: String) -> Result<PageI
         gray.extend_from_slice(&pix.samples()[y * pix.stride() as usize..][..width as usize]);
     }
     let mut words = vec![];
-    let text = native.to_text_page(TextPageFlags::empty()).map_err(err)?;
+    let mut vectors = vec![];
+    let mut blanks = vec![];
+    let mut images = vec![];
+    let text = native
+        .to_text_page(TextPageFlags::PRESERVE_IMAGES)
+        .map_err(err)?;
     for block in text.blocks() {
+        if block.image().is_some() {
+            let b = block.bounds();
+            images.push(TextRect {
+                left: b.x0 - bounds.x0,
+                top: b.y0 - bounds.y0,
+                right: b.x1 - bounds.x0,
+                bottom: b.y1 - bounds.y0,
+            });
+            continue;
+        }
         for line in block.lines() {
-            let mut value = String::new();
-            let mut r: Option<TextRect> = None;
-            for ch in line.chars() {
-                if words.len() > 10_000 || value.len() > 4096 {
-                    break;
-                }
-                if let Some(c) = ch.char() {
-                    if c == '_' {
-                        continue;
-                    }
-                    value.push(c);
+            if words.len() > 10_000 {
+                break;
+            }
+            let chars = line
+                .chars()
+                .filter_map(|ch| {
+                    let c = ch.char()?;
                     let q = ch.quad();
-                    let rect = TextRect {
-                        left: q.ul.x.min(q.ll.x) - bounds.x0,
-                        top: q.ul.y.min(q.ur.y) - bounds.y0,
-                        right: q.ur.x.max(q.lr.x) - bounds.x0,
-                        bottom: q.ll.y.max(q.lr.y) - bounds.y0,
-                    };
-                    r = Some(r.map_or(rect, |r| r.union(rect)));
-                }
-            }
-            if let Some(rect) = r
-                && !value.trim().is_empty()
-            {
-                words.push(Word {
-                    text: value.trim().into(),
-                    rect,
-                    confidence: 1.,
-                });
-            }
+                    Some((
+                        c,
+                        TextRect {
+                            left: q.ul.x.min(q.ll.x) - bounds.x0,
+                            top: q.ul.y.min(q.ur.y) - bounds.y0,
+                            right: q.ur.x.max(q.lr.x) - bounds.x0,
+                            bottom: q.ll.y.max(q.lr.y) - bounds.y0,
+                        },
+                    ))
+                })
+                .collect::<Vec<_>>();
+            collect_text_line(chars, &mut words, &mut blanks, &mut vectors);
         }
     }
-    let mut vectors = vec![];
     let mut circles = vec![];
     for drawing in native.drawings().map_err(err)?.into_iter().take(10_000) {
         if drawing
@@ -239,6 +246,15 @@ fn snapshot(doc: &PdfDocument, page: usize, name_prefix: String) -> Result<PageI
         }
     }
     blocked.extend(crate::forms::suppressed(doc, page)?);
+    // Raster analysis turns artwork inside embedded images (seal
+    // checkerboards, photo edges) into convincing little boxes. Exclude
+    // small images from detection; a full-page image is a scan, whose
+    // fields are exactly what raster detection exists to find.
+    let page_area = bounds.width() * bounds.height();
+    blocked.extend(images.into_iter().filter(|r| {
+        let area = (r.right - r.left).max(0.) * (r.bottom - r.top).max(0.);
+        area > 0. && area <= 0.20 * page_area
+    }));
     Ok(PageInput {
         page,
         width,
@@ -247,10 +263,76 @@ fn snapshot(doc: &PdfDocument, page: usize, name_prefix: String) -> Result<PageI
         scale,
         words,
         vectors,
+        blanks,
         circles,
         blocked,
         name_prefix,
     })
+}
+
+/// Split one extracted text line into words, underscore blanks, and checkbox
+/// glyphs. Merging a whole line into one word made its rect span every blank
+/// on the line, so occupancy checks discarded those fields; printed forms
+/// (Word "Print to PDF") have no vectors for the detector to fall back on.
+fn collect_text_line(
+    chars: Vec<(char, TextRect)>,
+    words: &mut Vec<Word>,
+    blanks: &mut Vec<TextRect>,
+    vectors: &mut Vec<TextRect>,
+) {
+    fn flush_word(words: &mut Vec<Word>, value: &mut String, rect: &mut Option<TextRect>) {
+        if let Some(rect) = rect.take()
+            && !value.trim().is_empty()
+            && words.len() <= 10_000
+        {
+            words.push(Word {
+                text: std::mem::take(value).trim().into(),
+                rect,
+                confidence: 1.,
+            });
+        } else {
+            value.clear();
+        }
+    }
+    fn flush_blank(blanks: &mut Vec<TextRect>, run: &mut Option<TextRect>) {
+        if let Some(rect) = run.take()
+            && rect.right - rect.left >= 15.
+        {
+            blanks.push(TextRect {
+                left: rect.left,
+                top: rect.bottom,
+                right: rect.right,
+                bottom: rect.bottom,
+            });
+        }
+    }
+    // Wingdings/ZapfDingbats ballot boxes and Unicode empty squares.
+    const CHECKBOX_GLYPHS: &[char] = &['\u{f0a8}', '\u{f071}', '☐', '□', '▢'];
+    let mut value = String::new();
+    let mut word_rect: Option<TextRect> = None;
+    let mut run: Option<TextRect> = None;
+    for (c, rect) in chars {
+        if c == '_' {
+            flush_word(words, &mut value, &mut word_rect);
+            run = Some(run.map_or(rect, |r| r.union(rect)));
+            continue;
+        }
+        flush_blank(blanks, &mut run);
+        if CHECKBOX_GLYPHS.contains(&c) {
+            flush_word(words, &mut value, &mut word_rect);
+            vectors.push(rect);
+        } else if c.is_whitespace() {
+            flush_word(words, &mut value, &mut word_rect);
+        } else {
+            if value.len() > 4096 {
+                flush_word(words, &mut value, &mut word_rect);
+            }
+            value.push(c);
+            word_rect = Some(word_rect.map_or(rect, |r| r.union(rect)));
+        }
+    }
+    flush_blank(blanks, &mut run);
+    flush_word(words, &mut value, &mut word_rect);
 }
 struct Scratch(PathBuf);
 impl Scratch {
@@ -534,6 +616,19 @@ fn label(words: &[Word], r: TextRect, checkbox: bool) -> Option<(String, f32)> {
         .map(|(_, w)| *w)
         .collect::<Vec<_>>();
     same.sort_by(|a, b| a.rect.left.total_cmp(&b.rect.left));
+    // On lines with several fields ("Date: ____  Taken by: ____"), only the
+    // contiguous words ending nearest this field are its label; a wide gap
+    // is where the previous field sits.
+    if let Some(anchor) = same
+        .iter()
+        .rposition(|w| w.rect.right <= r.left + 3. && (w.rect.top - r.top).abs() < 22.)
+    {
+        let mut start = anchor;
+        while start > 0 && same[start].rect.left - same[start - 1].rect.right < 18. {
+            start -= 1;
+        }
+        same = same[start..=anchor].to_vec();
+    }
     let text = same
         .iter()
         .map(|w| w.text.as_str())
@@ -548,6 +643,9 @@ struct Shape {
     closed: bool,
     round: bool,
     native: bool,
+    // Printed underscore blank: explicit field evidence, so it needs no
+    // keyword label to be believed.
+    blank: bool,
 }
 fn raster_shapes(input: &PageInput) -> Vec<Shape> {
     // Downsample to ~150 DPI. Group horizontal runs; pair box edges only when
@@ -662,6 +760,7 @@ fn raster_shapes(input: &PageInput) -> Vec<Shape> {
                     closed: true,
                     round: false,
                     native: false,
+                    blank: false,
                 });
                 paired.insert(i);
                 paired.insert(j);
@@ -680,6 +779,7 @@ fn raster_shapes(input: &PageInput) -> Vec<Shape> {
                 closed: false,
                 round: false,
                 native: false,
+                blank: false,
             });
         }
     }
@@ -743,6 +843,7 @@ fn raster_shapes(input: &PageInput) -> Vec<Shape> {
                     closed: true,
                     round: true,
                     native: false,
+                    blank: false,
                 });
             }
         }
@@ -766,14 +867,28 @@ fn candidates(input: &PageInput, words: &[Word]) -> Vec<DetectedField> {
                 closed,
                 round: false,
                 native: true,
+                blank: false,
             }
         })
         .collect::<Vec<_>>();
+    rects.extend(input.blanks.iter().map(|r| Shape {
+        rect: TextRect {
+            left: r.left,
+            top: (r.top - 18.).max(0.),
+            right: r.right,
+            bottom: (r.bottom - 1.).max(3.),
+        },
+        closed: false,
+        round: false,
+        native: true,
+        blank: true,
+    }));
     rects.extend(input.circles.iter().map(|r| Shape {
         rect: *r,
         closed: true,
         round: true,
         native: true,
+        blank: false,
     }));
     rects.extend(raster_shapes(input));
     rects.sort_by(|a, b| {
@@ -787,7 +902,9 @@ fn candidates(input: &PageInput, words: &[Word]) -> Vec<DetectedField> {
         let r = shape.rect;
         let (w, h) = (r.right - r.left, r.bottom - r.top);
         let check = (w - h).abs() < 5. && (5. ..=22.).contains(&w) && (5. ..=22.).contains(&h);
-        if !check && !((35. ..=500.).contains(&w) && (9. ..=65.).contains(&h)) {
+        let sized = ((35. ..=500.).contains(&w) && (9. ..=65.).contains(&h))
+            || (shape.blank && (18. ..=500.).contains(&w) && (9. ..=65.).contains(&h));
+        if !check && !sized {
             continue;
         }
         if input
@@ -811,7 +928,7 @@ fn candidates(input: &PageInput, words: &[Word]) -> Vec<DetectedField> {
         }
         let nearby = label(words, r, check);
         let (label, ocr_conf) = nearby.clone().unwrap_or(("Field".into(), 0.4));
-        if !check && w < 60. && (!shape.closed || nearby.is_none()) {
+        if !check && !shape.blank && w < 60. && (!shape.closed || nearby.is_none()) {
             continue;
         }
         let lower = label.to_ascii_lowercase();
@@ -872,7 +989,9 @@ fn candidates(input: &PageInput, words: &[Word]) -> Vec<DetectedField> {
             (-3. ..300.).contains(&(r.left - word.rect.right))
                 && (word.rect.top - r.top).abs() < 12.
         });
-        if (grid && !check && (!useful_label || !direct_label)) || (!shape.closed && !useful_label)
+        if !shape.blank
+            && ((grid && !check && (!useful_label || !direct_label))
+                || (!shape.closed && !useful_label))
         {
             continue;
         }
@@ -918,7 +1037,11 @@ fn candidates(input: &PageInput, words: &[Word]) -> Vec<DetectedField> {
             FieldKind::Checkbox
         } else if lower.contains("signature") || lower.contains("signed by") {
             FieldKind::VisualSignature
-        } else if lower.contains("date") {
+        } else if lower.contains("date")
+            || tokens.contains(&"dob")
+            || lower.contains("birth")
+            || lower.contains("born on")
+        {
             FieldKind::Date
         } else if ["amount", "quantity", "price", "total", "age"]
             .iter()
@@ -934,7 +1057,7 @@ fn candidates(input: &PageInput, words: &[Word]) -> Vec<DetectedField> {
         } else {
             0.58
         };
-        if !shape.closed && (!shape.native || w < 90.) {
+        if !shape.closed && !shape.blank && (!shape.native || w < 90.) {
             score = score.min(0.86);
         }
         let spec = FieldSpec {
@@ -1010,6 +1133,7 @@ fn recheck_crop(input: &PageInput, found: &[DetectedField]) -> (PageInput, (f32,
             scale: input.scale,
             words: vec![],
             vectors: vec![],
+            blanks: vec![],
             circles: vec![],
             blocked: vec![],
             name_prefix: input.name_prefix.clone(),
@@ -1025,11 +1149,21 @@ fn recognize(mut input: PageInput, cancel: &AtomicBool) -> Result<Vec<DetectedFi
         input.words.clone()
     };
     let mut found = candidates(&input, &words);
-    if found.iter().any(|f| f.spec.review) {
+    // The OCR recheck only refines uncertain fields. When the page already
+    // has digital text, unavailable OCR must not discard first-pass fields.
+    let recheck = if found.iter().any(|f| f.spec.review) {
+        let (crop, offset) = recheck_crop(&input, &found);
+        match ocr(&crop, 1, "11", cancel) {
+            Ok(second) => Some((second, offset)),
+            Err(error) if input.words.is_empty() => return Err(error),
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
+    if let Some((mut second, offset)) = recheck {
         // Second independent segmentation pass at the full raster resolution.
         // Existing digital text remains the authoritative label source.
-        let (crop, offset) = recheck_crop(&input, &found);
-        let mut second = ocr(&crop, 1, "11", cancel)?;
         for word in &mut second {
             word.rect.left += offset.0;
             word.rect.right += offset.0;
@@ -1093,6 +1227,59 @@ fn recognize(mut input: PageInput, cancel: &AtomicBool) -> Result<Vec<DetectedFi
 mod tests {
     use super::*;
     #[test]
+    fn embedded_image_artwork_is_excluded_but_page_scans_are_not() {
+        // The flat-form fixture embeds line-art squares (a stand-in for a
+        // state seal) as an 80x80pt image at x 470..550, y 12..92.
+        let seal = TextRect {
+            left: 470.,
+            top: 12.,
+            right: 550.,
+            bottom: 92.,
+        };
+        let doc = crate::files::open(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/corpus/flat-form.pdf"),
+            None,
+        )
+        .unwrap();
+        let input = snapshot(&doc, 0, "test".into()).unwrap();
+        assert!(
+            input
+                .blocked
+                .iter()
+                .any(|b| overlap(*b, seal) > 0.9 && overlap(seal, *b) > 0.9),
+            "small embedded image must be blocked: {:?}",
+            input.blocked
+        );
+        let found = candidates(&input, &input.words);
+        assert!(
+            found.iter().all(|f| overlap(f.spec.rect, seal) < 0.5),
+            "no field may be detected inside image artwork: {:?}",
+            found
+                .iter()
+                .filter(|f| overlap(f.spec.rect, seal) >= 0.5)
+                .map(|f| &f.spec.label)
+                .collect::<Vec<_>>()
+        );
+        // A scanned page is one large image; excluding it would erase
+        // scanned-form detection, so it must stay unblocked.
+        let scan = crate::files::open(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/corpus/scan.pdf"),
+            None,
+        )
+        .unwrap();
+        let input = snapshot(&scan, 0, "test".into()).unwrap();
+        let page_area = 612. * 792.;
+        assert!(
+            input
+                .blocked
+                .iter()
+                .all(|b| { (b.right - b.left) * (b.bottom - b.top) <= 0.20 * page_area }),
+            "full-page scan image must not be blocked: {:?}",
+            input.blocked
+        );
+    }
+    #[test]
     fn labeled_blank_box_is_detected_and_existing_fields_are_excluded() {
         let r = TextRect {
             left: 280.,
@@ -1117,6 +1304,7 @@ mod tests {
                 confidence: 1.,
             }],
             vectors: vec![r],
+            blanks: vec![],
             circles: vec![],
             blocked: vec![],
             name_prefix: "test".into(),
@@ -1127,6 +1315,91 @@ mod tests {
         assert!(!result[0].spec.review);
         input.blocked.push(r);
         assert!(candidates(&input, &input.words).is_empty());
+    }
+    #[test]
+    fn printed_underscore_blanks_and_checkbox_glyphs_become_fields() {
+        // Lay out "Taken by: ______  M <box>" as extracted chars, the way a
+        // Word print-to-PDF represents it: no vectors, all text glyphs.
+        let mut chars = vec![];
+        let mut x = 30_f32;
+        for c in "Taken by: ".chars() {
+            chars.push((
+                c,
+                TextRect {
+                    left: x,
+                    top: 42.,
+                    right: x + 6.,
+                    bottom: 56.,
+                },
+            ));
+            x += 6.;
+        }
+        for _ in 0..20 {
+            chars.push((
+                '_',
+                TextRect {
+                    left: x,
+                    top: 54.,
+                    right: x + 6.,
+                    bottom: 56.,
+                },
+            ));
+            x += 6.;
+        }
+        x += 12.;
+        for c in "M ".chars() {
+            chars.push((
+                c,
+                TextRect {
+                    left: x,
+                    top: 42.,
+                    right: x + 6.,
+                    bottom: 56.,
+                },
+            ));
+            x += 6.;
+        }
+        chars.push((
+            '\u{f0a8}',
+            TextRect {
+                left: x,
+                top: 44.,
+                right: x + 10.,
+                bottom: 54.,
+            },
+        ));
+        let (mut words, mut blanks, mut vectors) = (vec![], vec![], vec![]);
+        collect_text_line(chars, &mut words, &mut blanks, &mut vectors);
+        assert_eq!(blanks.len(), 1);
+        assert_eq!(vectors.len(), 1, "checkbox glyph becomes a closed rect");
+        assert!(words.iter().any(|w| w.text == "Taken"));
+        assert!(
+            words
+                .iter()
+                .all(|w| w.rect.right <= blanks[0].left || w.rect.left >= blanks[0].right),
+            "no word rect may span the blank"
+        );
+        let input = PageInput {
+            page: 0,
+            width: 800,
+            height: 400,
+            gray: vec![255; 800 * 400],
+            scale: 2.,
+            words: words.clone(),
+            vectors,
+            blanks,
+            circles: vec![],
+            blocked: vec![],
+            name_prefix: "flat".into(),
+        };
+        let found = candidates(&input, &words);
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert!(
+            found
+                .iter()
+                .any(|f| f.spec.kind == FieldKind::Text && f.spec.label.contains("Taken"))
+        );
+        assert!(found.iter().any(|f| f.spec.kind == FieldKind::Checkbox));
     }
     #[test]
     fn radio_groups_require_multiple_round_controls_and_explicit_grouping() {
@@ -1160,6 +1433,7 @@ mod tests {
                 },
             ],
             vectors: vec![],
+            blanks: vec![],
             circles: vec![rect(100., 60., 12., 12.), rect(100., 95., 12., 12.)],
             blocked: vec![],
             name_prefix: "radios".into(),

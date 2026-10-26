@@ -377,6 +377,316 @@ fn invalid_form_drafts_do_not_resume_failed_close_or_open_requests() {
     assert!(!ui.get_pending_open());
 }
 
+#[test]
+fn detect_fields_on_flat_printed_form_are_shown_and_fillable() {
+    let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
+    slint::platform::set_platform(Box::new(TestPlatform {
+        window: window.clone(),
+        clipboard: Rc::new(RefCell::new(String::new())),
+    }))
+    .unwrap();
+    let ui = AppWindow::new().unwrap();
+    ui.window().set_size(slint::LogicalSize::new(1180., 850.));
+    ui.show().unwrap();
+    let state = Rc::new(RefCell::new(State::new(
+        Trace::new(Instant::now(), None).unwrap(),
+        false,
+    )));
+    let callback = state.clone();
+    let weak = ui.as_weak();
+    ui.on_action(move |a| {
+        callback
+            .borrow_mut()
+            .action(&weak.upgrade().unwrap(), a.as_str())
+    });
+    let callback = state.clone();
+    let weak = ui.as_weak();
+    ui.on_form_select(move |i| {
+        callback
+            .borrow_mut()
+            .form_select(&weak.upgrade().unwrap(), i)
+    });
+    let callback = state.clone();
+    let weak = ui.as_weak();
+    ui.on_form_drag(move |i, x, y, phase, resize| {
+        callback
+            .borrow_mut()
+            .form_drag(&weak.upgrade().unwrap(), i, x, y, phase, resize)
+    });
+    state.borrow_mut().open(&ui, fixture("flat-form.pdf"));
+    wait(&mut state.borrow_mut(), &ui, |_, u| u.get_ready());
+    assert_eq!(ui.get_current_page_number(), 1);
+    // Opening Form on a page with no fields auto-detects that page.
+    ui.invoke_action("form-fill".into());
+    state.borrow_mut().tick(&ui);
+    wait(&mut state.borrow_mut(), &ui, |s, u| {
+        !u.get_file_busy()
+            && !u.get_form_detecting()
+            && s.forms.records.values().flatten().count() > 0
+            && u.get_form_surfaces().row_count() > 0
+    });
+    let (count, labels, checks, editable) = {
+        let state = state.borrow();
+        let fields = state.forms.records.values().flatten().collect::<Vec<_>>();
+        (
+            fields.len(),
+            fields
+                .iter()
+                .map(|f| f.spec.label.clone())
+                .collect::<Vec<_>>(),
+            fields
+                .iter()
+                .filter(|f| f.spec.kind == viewer_core::FieldKind::Checkbox)
+                .count(),
+            fields.iter().filter(|f| f.editable).count(),
+        )
+    };
+    eprintln!("detected {count} fields ({checks} checkboxes, {editable} editable): {labels:?}");
+    eprintln!("surfaces: {}", ui.get_form_surfaces().row_count());
+    // The fixture prints eleven underscore blanks and two checkbox squares.
+    assert!(count >= 9, "only {count} fields detected: {labels:?}");
+    assert!(checks >= 2, "checkbox squares not detected: {labels:?}");
+    assert_eq!(editable, count, "detected fields must be editable");
+    // Every detected field is drawn on the page.
+    assert_eq!(ui.get_form_surfaces().row_count(), count);
+    for expected in ["Taken", "Zip"] {
+        assert!(
+            labels.iter().any(|l| l.contains(expected)),
+            "missing a field labelled like {expected:?}: {labels:?}"
+        );
+    }
+    // Labels stop at the previous blank on multi-field lines.
+    for expected in ["Taken by", "DOB"] {
+        assert!(
+            labels.iter().any(|l| l == expected),
+            "expected an exact {expected:?} label: {labels:?}"
+        );
+    }
+    // Clicking a field on the page puts the keyboard in its inline editor:
+    // real pointer events, real keystrokes, Tab commits without any Apply.
+    let click_field = |ui: &AppWindow, window: &Rc<MinimalSoftwareWindow>, index: usize| {
+        state.borrow_mut().tick(ui);
+        let mut buffer = vec![slint::Rgb8Pixel::default(); 1180 * 850];
+        window.draw_if_needed(|r| {
+            r.render(&mut buffer, 1180);
+        });
+        let surface = ui.get_form_surfaces().row_data(index).unwrap();
+        let position = slint::LogicalPosition::new(
+            1180. - ui.get_view_width() + surface.x + surface.w / 2. + ui.get_scroll_x(),
+            850. - ui.get_view_height() - 32. + surface.y + surface.h / 2. + ui.get_scroll_y(),
+        );
+        ui.window().dispatch_event(WindowEvent::PointerPressed {
+            position,
+            button: PointerEventButton::Left,
+        });
+        ui.window().dispatch_event(WindowEvent::PointerReleased {
+            position,
+            button: PointerEventButton::Left,
+        });
+        state.borrow_mut().tick(ui);
+        let mut buffer = vec![slint::Rgb8Pixel::default(); 1180 * 850];
+        window.draw_if_needed(|r| {
+            r.render(&mut buffer, 1180);
+        });
+    };
+    let index = state
+        .borrow()
+        .forms
+        .records
+        .values()
+        .flatten()
+        .position(|f| f.spec.kind == viewer_core::FieldKind::Text && f.editable)
+        .expect("a detected editable text field");
+    let target_before = state
+        .borrow()
+        .forms
+        .records
+        .values()
+        .flatten()
+        .nth(index)
+        .map(|f| (f.id, f.spec.rect))
+        .unwrap();
+    click_field(&ui, &window, index);
+    assert!(ui.get_form_selected(), "clicking the field selects it");
+    assert!(ui.get_form_editable());
+    for c in "Jane Example".chars() {
+        press_key(&ui, c.to_string().into());
+    }
+    assert_eq!(
+        ui.get_form_value(),
+        "Jane Example",
+        "keystrokes must reach the inline editor"
+    );
+    press_key(&ui, Key::Tab.into());
+    wait(&mut state.borrow_mut(), &ui, |s, u| {
+        !u.get_file_busy()
+            && s.forms
+                .records
+                .values()
+                .flatten()
+                .any(|f| f.value.text() == "Jane Example")
+    });
+    // Typing and tabbing away must never move the box.
+    let after_tab = state
+        .borrow()
+        .forms
+        .records
+        .values()
+        .flatten()
+        .find(|f| f.id == target_before.0)
+        .map(|f| f.spec.rect)
+        .unwrap();
+    assert_eq!(after_tab, target_before.1, "field moved after Tab commit");
+    // A click that selects another field, with ordinary hand drift while
+    // pressed, must not move either box.
+    let (other_index, other_before) = state
+        .borrow()
+        .forms
+        .records
+        .values()
+        .flatten()
+        .enumerate()
+        .find(|(_, f)| f.spec.label == "Taken by")
+        .map(|(i, f)| (i, (f.id, f.spec.rect)))
+        .unwrap();
+    {
+        state.borrow_mut().tick(&ui);
+        let mut buffer = vec![slint::Rgb8Pixel::default(); 1180 * 850];
+        window.draw_if_needed(|r| {
+            r.render(&mut buffer, 1180);
+        });
+        let surface = ui.get_form_surfaces().row_data(other_index).unwrap();
+        let position = slint::LogicalPosition::new(
+            1180. - ui.get_view_width() + surface.x + surface.w / 2. + ui.get_scroll_x(),
+            850. - ui.get_view_height() - 32. + surface.y + surface.h / 2. + ui.get_scroll_y(),
+        );
+        ui.window().dispatch_event(WindowEvent::PointerPressed {
+            position,
+            button: PointerEventButton::Left,
+        });
+        ui.window().dispatch_event(WindowEvent::PointerMoved {
+            position: slint::LogicalPosition::new(position.x + 7., position.y + 5.),
+        });
+        ui.window().dispatch_event(WindowEvent::PointerReleased {
+            position: slint::LogicalPosition::new(position.x + 7., position.y + 5.),
+            button: PointerEventButton::Left,
+        });
+        state.borrow_mut().tick(&ui);
+    }
+    wait(&mut state.borrow_mut(), &ui, |_, u| !u.get_file_busy());
+    let after_drift = state
+        .borrow()
+        .forms
+        .records
+        .values()
+        .flatten()
+        .find(|f| f.id == other_before.0)
+        .map(|f| f.spec.rect)
+        .unwrap();
+    assert_eq!(
+        after_drift, other_before.1,
+        "selecting click with drift moved the field"
+    );
+    let first_after_drift = state
+        .borrow()
+        .forms
+        .records
+        .values()
+        .flatten()
+        .find(|f| f.id == target_before.0)
+        .map(|f| f.spec.rect)
+        .unwrap();
+    assert_eq!(
+        first_after_drift, target_before.1,
+        "clicking another field moved the previous field"
+    );
+    // Tab walks every field in reading order (rows left-to-right),
+    // whatever its review state.
+    let date_index = state
+        .borrow()
+        .forms
+        .records
+        .values()
+        .flatten()
+        .position(|f| f.spec.label == "Date")
+        .unwrap();
+    ui.invoke_form_select(date_index as i32);
+    let mut visited = vec![ui.get_form_label().to_string()];
+    for _ in 0..5 {
+        ui.invoke_action("form-next".into());
+        visited.push(ui.get_form_label().to_string());
+    }
+    assert_eq!(
+        visited,
+        [
+            "Date",
+            "Taken by",
+            "Customer Name",
+            "DOB",
+            "Address",
+            "City"
+        ],
+        "Tab must follow reading order"
+    );
+    // A date typed in US format is corrected to the field's ISO format
+    // when the field is committed (blur/Tab path).
+    let dob_index = state
+        .borrow()
+        .forms
+        .records
+        .values()
+        .flatten()
+        .position(|f| f.spec.label == "DOB")
+        .unwrap();
+    ui.invoke_form_select(dob_index as i32);
+    ui.set_form_value("11/24/1997".into());
+    ui.invoke_action("form-commit".into());
+    wait(&mut state.borrow_mut(), &ui, |s, u| {
+        !u.get_file_busy()
+            && s.forms
+                .records
+                .values()
+                .flatten()
+                .any(|f| f.spec.label == "DOB" && f.value.text() == "1997-11-24")
+    });
+    // Clicking a checkbox on the page toggles it directly.
+    let check_index = state
+        .borrow()
+        .forms
+        .records
+        .values()
+        .flatten()
+        .position(|f| f.spec.kind == viewer_core::FieldKind::Checkbox && f.editable)
+        .expect("a detected editable checkbox");
+    click_field(&ui, &window, check_index);
+    wait(&mut state.borrow_mut(), &ui, |s, u| {
+        !u.get_file_busy()
+            && s.forms.records.values().flatten().any(|f| {
+                f.spec.kind == viewer_core::FieldKind::Checkbox
+                    && !f.value.text().is_empty()
+                    && f.value.text() != "Off"
+            })
+    });
+    // Select All (context menu / Ctrl+A) selects this page's text.
+    ui.invoke_action("select-all".into());
+    wait(&mut state.borrow_mut(), &ui, |_, u| {
+        u.get_selection_text().contains("Customer Name")
+    });
+    // Print writes a copy of the edited document and hands it to the OS
+    // (recorded instead of printed under tests).
+    ui.invoke_action("print".into());
+    wait(&mut state.borrow_mut(), &ui, |s, u| {
+        !u.get_file_busy() && !s.editor.printed.is_empty()
+    });
+    let printed = state.borrow().editor.printed[0].clone();
+    assert!(printed.exists(), "print copy missing: {printed:?}");
+    assert!(
+        ui.get_file_message()
+            .contains("Sent to the default printer")
+    );
+    let _ = std::fs::remove_file(printed);
+}
+
 struct TestPlatform {
     window: Rc<MinimalSoftwareWindow>,
     clipboard: Rc<RefCell<String>>,
@@ -674,6 +984,11 @@ fn reader_flows_use_real_native_text_pointer_events_and_a_mock_clipboard() {
     state.borrow_mut().action(&ui, "view-facing");
     state.borrow_mut().navigate(&ui, 0);
     state.borrow_mut().action(&ui, "fit-page");
+    assert!(ui.get_fit_page(), "fit-page action selects page fit");
+    state.borrow_mut().action(&ui, "fit-width");
+    assert!(!ui.get_fit_page(), "fit-width action selects width fit");
+    state.borrow_mut().action(&ui, "fit-page");
+    assert!(ui.get_fit_page());
     wait(&mut state.borrow_mut(), &ui, |state, _| {
         state.tools.test_text(0).is_some() && state.tools.test_text(1).is_some()
     });

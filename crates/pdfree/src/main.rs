@@ -4,6 +4,7 @@ mod app;
 mod capture;
 mod features;
 mod navigation;
+mod settings;
 mod trace;
 
 use slint::ComponentHandle;
@@ -61,6 +62,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .select()?;
     let ui = AppWindow::new()?;
     trace.event("window_created", serde_json::json!({}));
+    // Restore remembered sidebar layout and colour scheme before first show.
+    let saved_settings = std::rc::Rc::new(std::cell::RefCell::new(settings::load()));
+    settings::apply(&ui, &saved_settings.borrow());
+    let settings_saved_at = std::rc::Rc::new(std::cell::RefCell::new(std::time::Instant::now()));
     let notifier_trace = trace.clone();
     let notifier = ui.window().set_rendering_notifier(move |state, _| {
         if matches!(state, slint::RenderingState::AfterRendering) {
@@ -325,6 +330,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let timer = slint::Timer::default();
     let timer_ui = ui.as_weak();
     let timer_state = state.clone();
+    let timer_settings = saved_settings.clone();
+    let timer_settings_at = settings_saved_at.clone();
     timer.start(
         slint::TimerMode::Repeated,
         Duration::from_millis(16),
@@ -332,6 +339,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let Some(ui) = timer_ui.upgrade() else {
                 return;
             };
+            // Persist sidebar/theme changes, throttled while a handle drags.
+            let current_settings = settings::snapshot(&ui);
+            if current_settings != *timer_settings.borrow()
+                && timer_settings_at.borrow().elapsed() >= Duration::from_millis(400)
+            {
+                settings::save(&current_settings);
+                *timer_settings.borrow_mut() = current_settings;
+                *timer_settings_at.borrow_mut() = std::time::Instant::now();
+            }
             let mut state = timer_state.borrow_mut();
             if let Ok(result) = dialog_receive.try_recv() {
                 state.dialog_open = false;
