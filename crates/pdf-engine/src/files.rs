@@ -460,13 +460,26 @@ pub(crate) fn move_no_replace(source: &Path, target: &Path) -> std::io::Result<(
     let source: Vec<_> = source.as_os_str().encode_wide().chain(Some(0)).collect();
     let target: Vec<_> = target.as_os_str().encode_wide().chain(Some(0)).collect();
     // No REPLACE_EXISTING flag: the kernel atomically rejects destination races.
-    if unsafe {
-        windows_sys::Win32::Storage::FileSystem::MoveFileExW(source.as_ptr(), target.as_ptr(), 0)
-    } == 0
-    {
-        Err(std::io::Error::last_os_error())
-    } else {
-        Ok(())
+    // Antivirus or search indexer can briefly hold a freshly created file, so
+    // retry the atomic move while a transient sharing lock is expected to clear.
+    let mut attempts = 0;
+    loop {
+        if unsafe {
+            windows_sys::Win32::Storage::FileSystem::MoveFileExW(
+                source.as_ptr(),
+                target.as_ptr(),
+                0,
+            )
+        } != 0
+        {
+            return Ok(());
+        }
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() != Some(32) || attempts == 9 {
+            return Err(error);
+        }
+        attempts += 1;
+        std::thread::sleep(std::time::Duration::from_millis(10 * attempts as u64));
     }
 }
 #[cfg(not(windows))]
