@@ -678,13 +678,25 @@ fn detect_fields_on_flat_printed_form_are_shown_and_fillable() {
     wait(&mut state.borrow_mut(), &ui, |s, u| {
         !u.get_file_busy() && !s.editor.printed.is_empty()
     });
-    let printed = state.borrow().editor.printed[0].clone();
-    assert!(printed.exists(), "print copy missing: {printed:?}");
+    let first = state.borrow().editor.printed[0].clone();
+    assert!(first.exists(), "print copy missing: {first:?}");
     assert!(
         ui.get_file_message()
             .contains("Sent to the default printer")
     );
-    let _ = std::fs::remove_file(printed);
+    // Reopening resets the operation counter, so the leftover copy must not
+    // collide with the next print's target name.
+    state.borrow_mut().open(&ui, fixture("flat-form.pdf"));
+    wait(&mut state.borrow_mut(), &ui, |_, u| u.get_ready());
+    ui.invoke_action("print".into());
+    wait(&mut state.borrow_mut(), &ui, |s, u| {
+        !u.get_file_busy() && !s.editor.printed.is_empty()
+    });
+    let second = state.borrow().editor.printed[0].clone();
+    assert!(second.exists(), "second print copy missing: {second:?}");
+    assert_ne!(second, first, "print copies must not reuse leftover names");
+    let _ = std::fs::remove_file(first);
+    let _ = std::fs::remove_file(second);
 }
 
 struct TestPlatform {
@@ -817,6 +829,7 @@ fn reader_flows_use_real_native_text_pointer_events_and_a_mock_clipboard() {
     wait(&mut state.borrow_mut(), &ui, |state, ui| {
         ui.get_ready() && state.tools.test_text(0).is_some()
     });
+    assert_eq!(ui.get_page_numbers().row_count(), 20);
     ui.set_search_visible(true);
     ui.invoke_focus_search();
     ui.window().dispatch_event(WindowEvent::KeyPressed {
@@ -912,6 +925,7 @@ fn reader_flows_use_real_native_text_pointer_events_and_a_mock_clipboard() {
             && state.tools.test_text(0).is_some()
             && state.navigation.test_links(0).is_some()
     });
+    assert_eq!(ui.get_page_numbers().row_count(), 3);
     state.borrow_mut().activate_bookmark(&ui, 1);
     assert_eq!(ui.get_page_entry(), "2");
     state.borrow_mut().navigate(&ui, 0);

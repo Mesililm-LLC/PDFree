@@ -228,7 +228,18 @@ impl State {
             ui.set_file_message("Could not prepare a print copy in the temp folder.".into());
             return;
         }
-        let target = directory.join(format!("{stem}-print-{}.pdf", self.editor.operation));
+        // The operation counter resets when a document is reopened, and print
+        // copies stay on disk for the asynchronous spooler, so probe for a
+        // name that does not collide with an earlier session's copy.
+        let mut target = directory.join(format!("{stem}-print-{}.pdf", self.editor.operation));
+        let mut unique = 1;
+        while std::fs::symlink_metadata(&target).is_ok() {
+            target = directory.join(format!(
+                "{stem}-print-{}-{}.pdf",
+                self.editor.operation, unique
+            ));
+            unique += 1;
+        }
         self.file_started(
             ui,
             self.engine.print_copy(
@@ -645,6 +656,9 @@ impl State {
                 ui.set_can_annotate(info.can_annotate);
                 ui.set_can_assemble(info.can_assemble);
                 ui.set_page_count(info.pages as i32);
+                ui.set_page_numbers(ModelRc::new(VecModel::from(
+                    (1..=info.pages as i32).collect::<Vec<i32>>(),
+                )));
                 self.cache.clear();
                 self.images.clear();
                 self.previews.clear();

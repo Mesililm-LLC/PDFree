@@ -481,12 +481,11 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                         if revision != journal.as_ref().map_or(0, |h| h.revision()) {
                             Err("Document revision changed".into())
                         } else {
-                            crate::editing::extract(
+                            crate::editing::print_copy(
                                 doc,
                                 &source_path,
                                 session_password.as_deref(),
                                 &target,
-                                &(0..geometry.len()).collect::<Vec<_>>(),
                                 || shared.current_document(command.document),
                             )
                             .map(|p| (p, FileAction::Print))

@@ -111,6 +111,7 @@ impl State {
         ui.set_tiles(ModelRc::default());
         ui.set_previews(ModelRc::default());
         ui.set_pages(ModelRc::default());
+        ui.set_page_numbers(ModelRc::default());
         ui.set_ready(false);
         ui.set_loading(true);
         ui.set_page_count(0);
@@ -477,6 +478,9 @@ impl State {
                     self.engine.outlines(self.document, self.editor.revision);
                     self.sizes = vec![info.first_page; info.pages];
                     ui.set_page_count(info.pages as i32);
+                    ui.set_page_numbers(ModelRc::new(VecModel::from(
+                        (1..=info.pages as i32).collect::<Vec<i32>>(),
+                    )));
                     ui.set_loading(false);
                     ui.set_ready(true);
                     ui.set_can_copy(info.can_copy);
