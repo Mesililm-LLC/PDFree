@@ -9,3 +9,5 @@
 7. Revisit direct GPU texture upload only after measurements identify upload/composition cost; compare the same viewport with PDFium if MuPDF remains a blocker.
 
 8. Reuse one graft map per imported document to avoid duplicating shared fonts/images under the published insert_pdf implementation; measure import time and memory before relaxing the snapshot budget.
+
+9. Add automated dependency advisory checking (cargo audit or cargo deny) to CI for the locked dependency graph, including the signing/crypto path; also keep `scripts/check-module-wiring.py` green so no source file drifts outside the module tree.

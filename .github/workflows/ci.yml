@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
   RUSTBACKTRACE: 1
@@ -29,10 +33,19 @@ jobs:
         toolchain: stable
         components: rustfmt, clippy
 
+    - name: Cache Rust and native build dependencies
+      uses: Swatinem/rust-cache@v2
+      with:
+        cache-directories: .tools
+
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
         python-version: '3.13'
+
+    # Files no `mod` declaration reaches are skipped by fmt/clippy/test below.
+    - name: Check module wiring
+      run: python scripts/check-module-wiring.py
 
     - name: Install build dependencies
       run: |
