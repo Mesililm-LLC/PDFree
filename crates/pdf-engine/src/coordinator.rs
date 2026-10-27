@@ -1,15 +1,12 @@
-use crate::backend::{
-    DisplayListBackend, DocumentBackend, PageBackend, mupdf::MupdfDocument, open_document,
-};
+use crate::backend::{DisplayListBackend, DocumentBackend, open_document};
 use crate::{DocumentInfo, EngineError, Event, FileAction, FileCommandAction, Shared, raster};
 use crossbeam_channel::{Receiver, Sender, bounded};
 use mupdf::{
-    Document, Page,
+    Document,
     pdf::{PdfDocument, Permission},
 };
 use std::{
     collections::{HashMap, HashSet},
-    path::{Path, PathBuf},
     sync::{Arc, atomic::Ordering},
     thread,
     time::{Duration, Instant},
@@ -73,7 +70,8 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                         };
                         let valid =
                             valid && shared.current_content(job.request.key.document, job.content);
-                        let pixels = valid.then(|| raster::render(&job.list, job.request.key));
+                        let pixels =
+                            valid.then(|| raster::render(job.list.as_ref(), job.request.key));
                         let result = Completed {
                             content: job.content,
                             thumbnail: job.thumbnail,
@@ -138,6 +136,7 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
             navigation = crate::navigation::Navigation::default();
             lists.clear();
             document = None;
+            backend = None;
             geometry.clear();
             queue.replace(Vec::new());
             document_id = open.document;
@@ -172,7 +171,7 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                 let count = doc
                     .page_count()
                     .map_err(|e| EngineError::InvalidDocument(e.to_string()))?;
-                if count <= 0 || count > crate::constants::MAX_PAGES {
+                if count <= 0 || count as usize > crate::constants::MAX_PAGES {
                     return Err(EngineError::InvalidDocument(
                         "Page count must be between 1 and 1,000,000".into(),
                     ));
@@ -590,7 +589,9 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                                 while deferred_results.len() < inflight.len()
                                     && !shared.stopping.load(Ordering::Acquire)
                                 {
-                                    match results.recv_timeout(Duration::from_millis(10)) {
+                                    match results.recv_timeout(Duration::from_millis(
+                                        crate::constants::CHANNEL_RECV_TIMEOUT_MILLIS,
+                                    )) {
                                         Ok(result) => deferred_results.push_back(result),
                                         Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
                                         Err(_) => break,
@@ -639,7 +640,9 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                                 while deferred_results.len() < inflight.len()
                                     && !shared.stopping.load(Ordering::Acquire)
                                 {
-                                    match results.recv_timeout(Duration::from_millis(10)) {
+                                    match results.recv_timeout(Duration::from_millis(
+                                        crate::constants::CHANNEL_RECV_TIMEOUT_MILLIS,
+                                    )) {
                                         Ok(result) => deferred_results.push_back(result),
                                         Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
                                         Err(_) => break,
@@ -1097,11 +1100,16 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                 }
                 if let std::collections::hash_map::Entry::Vacant(entry) = lists.entry(page) {
                     let started = Instant::now();
-                    match doc.load_page(page as i32).and_then(|p| {
-                        let bounds = p.bounds()?;
-                        let list = p.to_display_list(true)?;
-                        Ok((PageSize::new(bounds.width(), bounds.height()), list))
-                    }) {
+                    let result = backend
+                        .as_ref()
+                        .ok_or_else(|| "PDF backend is unavailable".to_string())
+                        .and_then(|backend| backend.load_page(page as i32))
+                        .and_then(|page| {
+                            let size = page.bounds()?;
+                            let list = page.to_display_list(true)?;
+                            Ok((size, list))
+                        });
+                    match result {
                         Ok((size, list)) => {
                             if geometry[page] != Some(size) {
                                 geometry[page] = Some(size);
@@ -1114,10 +1122,7 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                                     },
                                 );
                             }
-                            entry.insert(Arc::new(Box::new(
-                                crate::backend::mupdf::MupdfDisplayList { list },
-                            )
-                                as Arc<dyn DisplayListBackend>));
+                            entry.insert(Arc::from(list));
                             emit(
                                 &shared,
                                 &events,
@@ -1172,34 +1177,38 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                     );
                     continue;
                 }
-                let result = doc.load_page(page as i32).and_then(|p| {
-                    let bounds = p.bounds()?;
-                    let scale = (crate::constants::THUMBNAIL_WIDTH_SCALE / bounds.width())
-                        .min(crate::constants::THUMBNAIL_HEIGHT_SCALE / bounds.height())
-                        .min(crate::constants::THUMBNAIL_SCALE_MIN);
-                    let scale_milli = (scale * crate::constants::SCALE_MILLI_FACTOR)
-                        .floor()
-                        .max(crate::constants::THUMBNAIL_SCALE_MIN)
-                        as u32;
-                    let scale = scale_milli as f32 / crate::constants::SCALE_MILLI_FACTOR;
-                    let key = viewer_core::TileKey {
-                        document: document_id,
-                        page,
-                        scale_milli,
-                        rotation: 0,
-                        x: 0,
-                        y: 0,
-                        width: (bounds.width() * scale).ceil().clamp(
-                            crate::constants::THUMBNAIL_SCALE_MIN,
-                            crate::constants::THUMBNAIL_WIDTH_MAX,
-                        ) as u32,
-                        height: (bounds.height() * scale).ceil().clamp(
-                            crate::constants::THUMBNAIL_SCALE_MIN,
-                            crate::constants::THUMBNAIL_HEIGHT_MAX,
-                        ) as u32,
-                    };
-                    Ok((key, p.to_display_list(true)?))
-                });
+                let result = backend
+                    .as_ref()
+                    .ok_or_else(|| "PDF backend is unavailable".to_string())
+                    .and_then(|backend| backend.load_page(page as i32))
+                    .and_then(|page_handle| {
+                        let bounds = page_handle.bounds()?;
+                        let scale = (crate::constants::THUMBNAIL_WIDTH_SCALE / bounds.width)
+                            .min(crate::constants::THUMBNAIL_HEIGHT_SCALE / bounds.height)
+                            .min(crate::constants::THUMBNAIL_SCALE_MIN);
+                        let scale_milli = (scale * crate::constants::SCALE_MILLI_FACTOR)
+                            .floor()
+                            .max(crate::constants::THUMBNAIL_SCALE_MIN)
+                            as u32;
+                        let scale = scale_milli as f32 / crate::constants::SCALE_MILLI_FACTOR;
+                        let key = viewer_core::TileKey {
+                            document: document_id,
+                            page,
+                            scale_milli,
+                            rotation: 0,
+                            x: 0,
+                            y: 0,
+                            width: (bounds.width * scale).ceil().clamp(
+                                crate::constants::THUMBNAIL_SCALE_MIN,
+                                crate::constants::THUMBNAIL_WIDTH_MAX,
+                            ) as u32,
+                            height: (bounds.height * scale).ceil().clamp(
+                                crate::constants::THUMBNAIL_SCALE_MIN,
+                                crate::constants::THUMBNAIL_HEIGHT_MAX,
+                            ) as u32,
+                        };
+                        Ok((key, page_handle.to_display_list(true)?))
+                    });
                 match result {
                     Ok((key, list)) => {
                         let request = RenderRequest {
@@ -1208,12 +1217,10 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                             priority: crate::constants::THUMBNAIL_PRIORITY,
                         };
                         inflight.insert((key, 0, true, content));
-                        let backend_list: Box<dyn DisplayListBackend> =
-                            Box::new(crate::backend::mupdf::MupdfDisplayList { list });
                         let _ = jobs.send(Job {
                             content,
                             request,
-                            list: Arc::new(backend_list),
+                            list: Arc::from(list),
                             thumbnail: true,
                         });
                     }

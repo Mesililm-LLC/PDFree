@@ -1,9 +1,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+#[cfg(test)]
 mod capture;
 mod features;
-mod navigation;
 mod settings;
 mod trace;
 
@@ -94,7 +94,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             {
                 return;
             }
-            let document = action_state.borrow().document;
+            let document = action_state.borrow().document.document;
             action_state.borrow_mut().dialog_open = true;
             let send = dialog_send.clone();
             std::thread::spawn(move || {
@@ -124,7 +124,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             {
                 return;
             }
-            let document = action_state.borrow().document;
+            let document = action_state.borrow().document.document;
             action_state.borrow_mut().dialog_open = true;
             let send = dialog_send.clone();
             std::thread::spawn(move || {

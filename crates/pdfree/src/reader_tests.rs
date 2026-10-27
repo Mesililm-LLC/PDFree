@@ -4,7 +4,7 @@ use slint::platform::{
     Clipboard, Key, Platform, PlatformError, PointerEventButton, WindowAdapter, WindowEvent,
     software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
 };
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, rc::Rc, time::Instant};
 
 #[test]
 fn forms_drawing_filling_and_type_conversion_use_native_history() {
@@ -74,8 +74,8 @@ fn forms_drawing_filling_and_type_conversion_use_native_history() {
     window.draw_if_needed(|r| {
         r.render(&mut buffer, 1770);
     });
-    let p = state.borrow().layout.pages[0];
-    let scale = state.borrow().zoom * 96. / 72.;
+    let p = state.borrow().viewport.layout.pages[0];
+    let scale = state.borrow().viewport.zoom * 96. / 72.;
     let offset_x = 1180. - ui.get_view_width();
     let offset_y = 850. - ui.get_view_height() - 32.;
     let point = |x: f32, y: f32| {
@@ -225,8 +225,8 @@ fn forms_drawing_filling_and_type_conversion_use_native_history() {
     ui.set_form_kind(8);
     ui.set_form_label("Signature".into());
     ui.invoke_action("form-new".into());
-    let p = state.borrow().layout.pages[0];
-    let scale = state.borrow().zoom * 96. / 72.;
+    let p = state.borrow().viewport.layout.pages[0];
+    let scale = state.borrow().viewport.zoom * 96. / 72.;
     ui.invoke_reader_pointer(p.x + 40. * scale, p.y + 160. * scale, 0);
     ui.invoke_reader_pointer(p.x + 260. * scale, p.y + 205. * scale, 2);
     wait(&mut state.borrow_mut(), &ui, |s, u| {
@@ -273,8 +273,8 @@ fn forms_drawing_filling_and_type_conversion_use_native_history() {
         ui.set_form_group("choices".into());
         ui.set_form_label(format!("Choice {}", index + 1).into());
         ui.invoke_action("form-new".into());
-        let p = state.borrow().layout.pages[0];
-        let scale = state.borrow().zoom * 96. / 72.;
+        let p = state.borrow().viewport.layout.pages[0];
+        let scale = state.borrow().viewport.zoom * 96. / 72.;
         ui.invoke_reader_pointer(p.x + 40. * scale, p.y + top * scale, 0);
         ui.invoke_reader_pointer(p.x + 54. * scale, p.y + (top + 14.) * scale, 2);
         wait(&mut state.borrow_mut(), &ui, |s, u| {
@@ -357,7 +357,7 @@ fn invalid_form_drafts_do_not_resume_failed_close_or_open_requests() {
         !u.get_file_busy() && s.forms.records.values().flatten().count() == 1
     });
     state.form_select(&ui, 0);
-    let document = state.document;
+    let document = state.document.document;
     ui.set_form_value("invalid date".into());
     assert!(state.form_before_close(&ui));
     assert!(state.form_before_open(&ui, &fixture("office.pdf")));
@@ -373,7 +373,7 @@ fn invalid_form_drafts_do_not_resume_failed_close_or_open_requests() {
                 .flatten()
                 .any(|f| f.value.text() == "2030-01-01")
     });
-    assert_eq!(state.document, document);
+    assert_eq!(state.document.document, document);
     assert!(!ui.get_pending_open());
 }
 
@@ -856,8 +856,8 @@ fn reader_flows_use_real_native_text_pointer_events_and_a_mock_clipboard() {
     ui.window().set_size(slint::LogicalSize::new(1180.0, 850.0));
     state.borrow_mut().tick(&ui);
     let text = state.borrow().tools.test_text(0).unwrap();
-    let page = state.borrow().layout.pages[0];
-    let scale = state.borrow().zoom * 96.0 / 72.0;
+    let page = state.borrow().viewport.layout.pages[0];
+    let scale = state.borrow().viewport.zoom * 96.0 / 72.0;
     let glyph0 = text.glyphs[0].bounds;
     let glyph5 = text.glyphs[5].bounds;
     let offset_y = 850.0 - ui.get_view_height() - 32.0;
@@ -942,7 +942,7 @@ fn reader_flows_use_real_native_text_pointer_events_and_a_mock_clipboard() {
             )
         })
         .unwrap();
-    let scale = state.borrow().zoom * 96. / 72.;
+    let scale = state.borrow().viewport.zoom * 96. / 72.;
     state.borrow_mut().activate_link(
         &ui,
         0,
@@ -974,7 +974,7 @@ fn reader_flows_use_real_native_text_pointer_events_and_a_mock_clipboard() {
     assert!(!first.glyphs.is_empty() && !second.glyphs.is_empty());
     let from = first.glyphs[0].bounds;
     let to = second.glyphs.last().unwrap().bounds;
-    let scale = state.borrow().zoom * 96. / 72.;
+    let scale = state.borrow().viewport.zoom * 96. / 72.;
     state
         .borrow_mut()
         .select_text(&ui, 0, from.left * scale, from.top * scale, 0);
@@ -1009,9 +1009,9 @@ fn reader_flows_use_real_native_text_pointer_events_and_a_mock_clipboard() {
     window.draw_if_needed(|renderer| {
         renderer.render(&mut buffer, 1770);
     });
-    let scale = state.borrow().zoom * 96. / 72.;
+    let scale = state.borrow().viewport.zoom * 96. / 72.;
     let pointer_position = |page: usize, r: viewer_core::TextRect| {
-        let rect = state.borrow().layout.pages[page];
+        let rect = state.borrow().viewport.layout.pages[page];
         slint::LogicalPosition::new(
             rect.x
                 + (r.left + r.right) / 2. * scale
@@ -1040,22 +1040,22 @@ fn reader_flows_use_real_native_text_pointer_events_and_a_mock_clipboard() {
         button: PointerEventButton::Left,
     });
     assert!(ui.get_selection_text().contains("\n\n"));
-    assert!(state.borrow().pointer.is_none());
+    assert!(state.borrow().viewport.pointer.is_none());
     let stopped = ui.get_scroll_y();
     state.borrow_mut().tick(&ui);
     assert_eq!(ui.get_scroll_y(), stopped);
     crate::capture::snapshot(&ui, "navigation-facing-selection").unwrap();
     // Hold the captured pointer near the lower edge and verify actual cross-page autoscroll.
     state.borrow_mut().action(&ui, "view-continuous");
-    state.borrow_mut().zoom = 1.;
-    state.borrow_mut().dirty = true;
+    state.borrow_mut().viewport.zoom = 1.;
+    state.borrow_mut().viewport.dirty = true;
     state.borrow_mut().navigate(&ui, 0);
     state.borrow_mut().tick(&ui);
     window.draw_if_needed(|renderer| {
         renderer.render(&mut buffer, 1770);
     });
-    let page = state.borrow().layout.pages[0];
-    let scale = state.borrow().zoom * 96. / 72.;
+    let page = state.borrow().viewport.layout.pages[0];
+    let scale = state.borrow().viewport.zoom * 96. / 72.;
     let begin = slint::LogicalPosition::new(
         230. + page.x + (from.left + from.right) / 2. * scale + ui.get_scroll_x(),
         offset_y + page.y + (from.top + from.bottom) / 2. * scale + ui.get_scroll_y(),
@@ -1082,7 +1082,7 @@ fn reader_flows_use_real_native_text_pointer_events_and_a_mock_clipboard() {
     wait(&mut state.borrow_mut(), &ui, |_, ui| {
         ui.get_selection_text().contains("\n\n")
     });
-    assert!(state.borrow().pointer.is_none());
+    assert!(state.borrow().viewport.pointer.is_none());
     let stopped = ui.get_scroll_y();
     for _ in 0..3 {
         state.borrow_mut().tick(&ui);
@@ -1092,13 +1092,13 @@ fn reader_flows_use_real_native_text_pointer_events_and_a_mock_clipboard() {
     state
         .borrow_mut()
         .reader_pointer(&ui, page.x + 100., page.y + 200., 1);
-    assert!(state.borrow().pointer.is_none());
+    assert!(state.borrow().viewport.pointer.is_none());
     assert!(ui.get_selection_text().is_empty());
     state
         .borrow_mut()
         .reader_pointer(&ui, page.x + 100., page.y + 200., 0);
     state.borrow_mut().reader_pointer(&ui, 0., 0., 3);
-    assert!(state.borrow().pointer.is_none());
+    assert!(state.borrow().viewport.pointer.is_none());
     crate::capture::snapshot(&ui, "navigation-autoscroll").unwrap();
     ui.window().set_size(slint::LogicalSize::new(680., 480.));
     state.borrow_mut().tick(&ui);
@@ -1222,9 +1222,9 @@ fn editing_flows(state: &Rc<RefCell<State>>, ui: &AppWindow, window: &Rc<Minimal
         (b.top + b.bottom) / 2.0 * 96.0 / 72.0,
         2,
     );
-    let original_width = state.borrow().sizes[0].width;
+    let original_width = state.borrow().viewport.sizes[0].width;
     let clipped_width = (a.left + b.right) / 2.0;
-    state.borrow_mut().sizes[0].width = clipped_width;
+    state.borrow_mut().viewport.sizes[0].width = clipped_width;
     edit_action(state, ui, "annotate-highlight");
     wait_annotations(state, ui, 1);
     assert!(state.borrow().editor.notes.values().flatten().any(|a| matches!(&a.annotation,viewer_core::Annotation::Highlight{rects,..} if rects.iter().all(|r|r.right<=clipped_width&&r.left>=0.0))));
@@ -1237,7 +1237,7 @@ fn editing_flows(state: &Rc<RefCell<State>>, ui: &AppWindow, window: &Rc<Minimal
     edit_action(state, ui, "redo");
     wait_annotations(state, ui, 1);
     assert!(ui.get_dirty_document());
-    assert_eq!(state.borrow().sizes[0].width, original_width);
+    assert_eq!(state.borrow().viewport.sizes[0].width, original_width);
 
     let mut buffer = vec![slint::Rgb8Pixel::default(); 1770 * 1275];
     window.draw_if_needed(|renderer| {
@@ -1322,7 +1322,7 @@ fn editing_flows(state: &Rc<RefCell<State>>, ui: &AppWindow, window: &Rc<Minimal
     wait(&mut state.borrow_mut(), ui, |_, ui| !ui.get_file_busy());
     assert!(target.exists());
     assert_eq!(
-        state.borrow().path.as_ref(),
+        state.borrow().document.path.as_ref(),
         Some(&target),
         "Save As switches the active file"
     );
@@ -1421,7 +1421,7 @@ fn editing_flows(state: &Rc<RefCell<State>>, ui: &AppWindow, window: &Rc<Minimal
     wait(&mut state.borrow_mut(), ui, |_, ui| !ui.get_file_busy());
     assert!(!ui.get_dirty_document());
     assert!(state.borrow_mut().take_save_dialog().is_none());
-    assert_eq!(state.borrow().path.as_ref(), Some(&target));
+    assert_eq!(state.borrow().document.path.as_ref(), Some(&target));
     assert_eq!(std::fs::read(&renamed).unwrap(), checkpoint);
 
     // Pending open/close blocks undo and saves before an explicitly authorized close.
@@ -1470,7 +1470,7 @@ fn editing_flows(state: &Rc<RefCell<State>>, ui: &AppWindow, window: &Rc<Minimal
     ui.set_page_range("2".into());
     edit_action(state, ui, "rotate-right");
     wait(&mut state.borrow_mut(), ui, |state, _| {
-        state.sizes[1].width > state.sizes[1].height
+        state.viewport.sizes[1].width > state.viewport.sizes[1].height
     });
     state.borrow_mut().action(ui, "page-tools");
     ui.set_move_to("3".into());
@@ -1501,7 +1501,7 @@ fn editing_flows(state: &Rc<RefCell<State>>, ui: &AppWindow, window: &Rc<Minimal
         .tool_dialog_result(ui, document, kind, vec![extracted.clone()]);
     wait(&mut state.borrow_mut(), ui, |_, ui| !ui.get_file_busy());
     assert!(extracted.exists());
-    assert_eq!(state.borrow().path.as_ref(), Some(&pages_source));
+    assert_eq!(state.borrow().document.path.as_ref(), Some(&pages_source));
     assert!(!ui.get_dirty_document());
     let split_directory = directory.join("split");
     std::fs::create_dir(&split_directory).unwrap();

@@ -36,6 +36,8 @@ impl ViewportManager {
     pub fn reset_for_open(&mut self) {
         self.sizes.clear();
         self.zoom = 1.0;
+        self.reading_page = 0;
+        self.pointer = None;
         self.previous_view = None;
         self.current_page = usize::MAX;
         self.layout = Layout::new(&[], 1.0, 1.0);
@@ -147,7 +149,6 @@ impl ViewportManager {
         current: usize,
         old_zoom: f32,
         new_zoom: f32,
-        old_y: f32,
         offset: f32,
     ) {
         self.zoom = clamp_zoom(new_zoom);

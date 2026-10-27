@@ -139,7 +139,7 @@ fn thumbnails_are_small_complete_pages_and_survive_viewport_generation_changes()
         };
         assert!(key.width <= 140 && key.height <= 160);
         assert_eq!(pixels.rgba.len(), (key.width * key.height * 4) as usize);
-        assert!(pixels.rgba.chunks_exact(4).any(|p| p[0] < 240));
+        assert!(pixels.rgba.as_chunks::<4>().0.iter().any(|p| p[0] < 240));
         thumbnails.insert(key.page, pixels);
     }
     engine.thumbnails(1, vec![0, 1, 2]);

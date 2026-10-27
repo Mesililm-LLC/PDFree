@@ -469,8 +469,8 @@ pub(crate) fn page(doc: &PdfDocument, index: usize) -> Result<Vec<FormField>> {
                 .map_err(err)?
                 .map(|v| {
                     v.as_int()
-                        .unwrap_or(crate::constants::DEFAULT_DECIMALS)
-                        .clamp(0, crate::constants::MAX_DECIMALS) as u8
+                        .unwrap_or(crate::constants::DEFAULT_DECIMALS as i32)
+                        .clamp(0, crate::constants::MAX_DECIMALS as i32) as u8
                 })
                 .unwrap_or(crate::constants::DEFAULT_DECIMALS),
         };

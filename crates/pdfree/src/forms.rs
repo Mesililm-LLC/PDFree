@@ -295,8 +295,12 @@ impl State {
                 let opening = ui.get_form_mode() == 0;
                 ui.set_form_mode(1);
                 ui.set_form_draw(action == "form-prepare");
-                if opening && action == "form-fill" && !self.sizes.is_empty() {
-                    self.forms.auto_detect_page = Some(self.current_page.min(self.sizes.len() - 1));
+                if opening && action == "form-fill" && !self.viewport.sizes.is_empty() {
+                    self.forms.auto_detect_page = Some(
+                        self.viewport
+                            .current_page
+                            .min(self.viewport.sizes.len() - 1),
+                    );
                 }
                 self.forms.wanted.clear();
                 self.form_error(
@@ -463,7 +467,7 @@ impl State {
             }
             _ => {}
         }
-        self.dirty = true;
+        self.viewport.dirty = true;
         true
     }
     pub fn form_select(&mut self, ui: &AppWindow, index: i32) {
@@ -551,7 +555,7 @@ impl State {
                 format!("{} · page {}", f.spec.kind.label(), f.spec.page + 1)
             },
         );
-        if self.current_page != f.spec.page {
+        if self.viewport.current_page != f.spec.page {
             self.navigate(ui, f.spec.page);
         }
         self.form_overlays(ui);
@@ -561,7 +565,11 @@ impl State {
     }
     fn form_navigate(&mut self, ui: &AppWindow, previous: bool, entering: bool, review: bool) {
         let page = self.forms.navigation.map_or_else(
-            || self.forms.selected.map_or(self.current_page, |id| id.page),
+            || {
+                self.forms
+                    .selected
+                    .map_or(self.viewport.current_page, |id| id.page)
+            },
             |(_, p, _, _)| p,
         );
         let mut on_page = self
@@ -729,7 +737,7 @@ impl State {
         certificate: Option<std::path::PathBuf>,
         target: Option<std::path::PathBuf>,
     ) {
-        if document != self.document || !self.certificate_can_import(ui) {
+        if document != self.document.document || !self.certificate_can_import(ui) {
             return;
         }
         if let (Some(certificate), Some(target)) = (certificate, target) {
@@ -756,7 +764,7 @@ impl State {
         ui.set_digital_visible(false);
         self.editor.operation += 1;
         let ok = self.engine.sign(
-            self.document,
+            self.document.document,
             self.editor.revision,
             self.editor.operation,
             pdf_engine::SigningRequest {
@@ -781,7 +789,7 @@ impl State {
         document: u64,
         path: Option<std::path::PathBuf>,
     ) {
-        if document != self.document || !self.signature_can_import() {
+        if document != self.document.document || !self.signature_can_import() {
             return;
         }
         let Some(path) = path else {
@@ -882,9 +890,10 @@ impl State {
             self.forms.draw = None;
             return;
         }
-        let scale = self.zoom * 96. / 72.;
+        let scale = self.viewport.zoom * 96. / 72.;
         if phase == 0 {
             self.forms.draw = self
+                .viewport
                 .layout
                 .pages
                 .iter()
@@ -895,7 +904,7 @@ impl State {
         if matches!(phase, 0 | 1)
             && let Some((page, sx, sy)) = self.forms.draw
         {
-            let p = self.layout.pages[page];
+            let p = self.viewport.layout.pages[page];
             let ex = ((x - p.x) / scale).clamp(0., p.width / scale);
             let ey = ((y - p.y) / scale).clamp(0., p.height / scale);
             ui.set_form_draft_x(p.x + sx.min(ex) * scale);
@@ -910,7 +919,7 @@ impl State {
         if phase == 2
             && let Some((page, sx, sy)) = self.forms.draw.take()
         {
-            let p = self.layout.pages[page];
+            let p = self.viewport.layout.pages[page];
             let ex = ((x - p.x) / scale).clamp(0., p.width / scale);
             let ey = ((y - p.y) / scale).clamp(0., p.height / scale);
             match self.selected_spec(ui, None) {
@@ -1019,8 +1028,8 @@ impl State {
         if phase == 1
             && let Some((f, sx, sy, resize)) = &self.forms.drag
         {
-            let p = self.layout.pages[f.spec.page];
-            let scale = self.zoom * 96. / 72.;
+            let p = self.viewport.layout.pages[f.spec.page];
+            let scale = self.viewport.zoom * 96. / 72.;
             let (dx, dy) = ((x - *sx) / scale, (y - *sy) / scale);
             let mut r = f.spec.rect;
             if *resize {
@@ -1044,7 +1053,7 @@ impl State {
         if phase == 2
             && let Some((f, sx, sy, resize)) = self.forms.drag.take()
         {
-            let scale = self.zoom * 96. / 72.;
+            let scale = self.viewport.zoom * 96. / 72.;
             let (dx, dy) = ((x - sx) / scale, (y - sy) / scale);
             if dx.abs() + dy.abs() < 1. {
                 return;
@@ -1071,7 +1080,7 @@ impl State {
                 operation,
                 path,
                 integrity,
-            } if *document == self.document && *operation == self.editor.operation => {
+            } if *document == self.document.document && *operation == self.editor.operation => {
                 ui.set_digital_signing(false);
                 ui.set_file_busy(false);
                 self.open(ui, path.clone());
@@ -1083,7 +1092,7 @@ impl State {
                 operation,
                 processed,
                 total,
-            } if *document == self.document && *operation == self.editor.operation => {
+            } if *document == self.document.document && *operation == self.editor.operation => {
                 self.form_error(ui,format!("Recognizing fields: {processed}/{total} pages. Uncertain fields receive a second local pass."));
                 false
             }
@@ -1092,7 +1101,7 @@ impl State {
                 operation,
                 count,
                 review_pages,
-            } if *document == self.document && *operation == self.editor.operation => {
+            } if *document == self.document.document && *operation == self.editor.operation => {
                 ui.set_file_busy(false);
                 ui.set_form_detecting(false);
                 self.forms.review_pages = review_pages.iter().copied().collect();
@@ -1115,7 +1124,7 @@ impl State {
                 }
                 true
             }
-            Event::Changed { document, .. } if *document == self.document => {
+            Event::Changed { document, .. } if *document == self.document.document => {
                 if self.forms.signature_pending {
                     self.forms.signature_pending = false;
                     ui.set_signature_visible(false);
@@ -1139,7 +1148,7 @@ impl State {
                 revision,
                 page,
                 fields,
-            } if *document == self.document
+            } if *document == self.document.document
                 && *revision == self.editor.revision
                 && self.forms.wanted.contains(page) =>
             {
@@ -1205,7 +1214,7 @@ impl State {
             }
             Event::FileError {
                 document, message, ..
-            } if *document == self.document => {
+            } if *document == self.document.document => {
                 ui.set_form_detecting(false);
                 ui.set_digital_signing(false);
                 self.forms.signature_pending = false;
@@ -1243,12 +1252,12 @@ impl State {
                 .retain(|p, _| wanted.contains(p) || Some(*p) == selected_page);
             self.forms.wanted = wanted.clone();
             self.engine
-                .form_pages(self.document, self.editor.revision, wanted);
+                .form_pages(self.document.document, self.editor.revision, wanted);
         }
         self.form_overlays(ui);
     }
     fn form_overlays(&self, ui: &AppWindow) {
-        let scale = self.zoom * 96. / 72.;
+        let scale = self.viewport.zoom * 96. / 72.;
         let surfaces = self
             .forms
             .records
@@ -1256,7 +1265,7 @@ impl State {
             .flatten()
             .enumerate()
             .filter_map(|(i, f)| {
-                let p = self.layout.pages.get(f.spec.page)?;
+                let p = self.viewport.layout.pages.get(f.spec.page)?;
                 let r = f.spec.rect;
                 Some(FormSurface {
                     index: i as i32,
@@ -1285,9 +1294,11 @@ impl State {
         ui.set_form_surfaces(ModelRc::new(VecModel::from(surfaces)));
     }
     fn start_form_detection(&mut self, ui: &AppWindow) {
-        let count = self.sizes.len();
+        let count = self.viewport.sizes.len();
         let pages = match ui.get_form_scan_scope() {
-            0 => Ok(vec![self.current_page.min(count.saturating_sub(1))]),
+            0 => Ok(vec![
+                self.viewport.current_page.min(count.saturating_sub(1)),
+            ]),
             1 => viewer_core::parse_pages(ui.get_form_scan_pages().as_str(), count),
             _ => Ok((0..count).collect()),
         };
@@ -1321,10 +1332,10 @@ impl State {
         }
         self.editor.operation += 1;
         let accepted = self.engine.detect_fields(
-            self.document,
+            self.document.document,
             self.editor.revision,
             self.editor.operation,
-            self.generation + 1,
+            self.viewport.generation + 1,
             pages,
         );
         if accepted {

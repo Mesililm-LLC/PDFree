@@ -2,8 +2,9 @@
 
 use crate::AppWindow;
 use pdf_engine::{Engine, EngineError};
-use slint::{ModelRc, Rgba8Pixel, SharedPixelBuffer, VecModel};
+use slint::{ComponentHandle, ModelRc, Rgba8Pixel, SharedPixelBuffer, VecModel};
 use std::collections::HashSet;
+use std::sync::Arc;
 use viewer_core::{PixelTile, TileKey};
 
 pub struct RenderManager {
@@ -41,7 +42,7 @@ impl RenderManager {
     pub fn insert_tile(
         &mut self,
         key: TileKey,
-        pixels: PixelTile,
+        pixels: Arc<PixelTile>,
         generation: u64,
         document: u64,
         current_generation: u64,
@@ -100,7 +101,7 @@ impl RenderManager {
             .collect::<Vec<_>>();
         ui.set_pages(ModelRc::new(VecModel::from(pages)));
 
-        let requests = layout.requests(document, generation, &view, 2);
+        let requests = layout.requests(document, generation, view, 2);
         let desired_images: HashSet<TileKey> = requests
             .iter()
             .filter(|r| r.priority < 1000)
@@ -109,12 +110,12 @@ impl RenderManager {
         self.images.retain(|key, _| desired_images.contains(key));
         let mut missing = Vec::new();
         for request in &requests {
-            if self.images.contains_key(request) {
+            if self.images.contains_key(&request.key) {
                 continue;
             }
-            if let Some(pixels) = self.cache.get(request) {
+            if let Some(pixels) = self.cache.get(&request.key) {
                 if request.priority < 1000 {
-                    self.images.entry(*request).or_insert_with(|| {
+                    self.images.entry(request.key).or_insert_with(|| {
                         let buffer = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(
                             &pixels.rgba,
                             pixels.width,
@@ -124,7 +125,7 @@ impl RenderManager {
                     });
                 }
             } else {
-                missing.push(*request);
+                missing.push(request.clone());
             }
         }
         if self.render_error.is_some() {

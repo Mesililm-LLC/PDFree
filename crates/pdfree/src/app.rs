@@ -1,17 +1,12 @@
-use crate::{
-    AppWindow, PageSurface, TileSurface, benchmark::BenchmarkAction, trace::Trace,
-    viewport::ViewportManager,
-};
+use crate::{AppWindow, trace::Trace};
+use benchmark::{BenchmarkAction, BenchmarkManager};
+use document_manager::DocumentManager;
 use pdf_engine::{Engine, EngineError, Event};
-use slint::{ComponentHandle, ModelRc, Rgba8Pixel, SharedPixelBuffer, VecModel};
-use std::{
-    collections::{HashMap, HashSet},
-    path::PathBuf,
-    time::{Duration, Instant},
-};
-use viewer_core::{
-    Layout, PageSize, ReadingMode, TileCache, TileKey, Viewport, accept_result, clamp_zoom,
-};
+use render_manager::RenderManager;
+use slint::{ComponentHandle, ModelRc, VecModel};
+use std::{path::PathBuf, time::Duration};
+use viewer_core::Viewport;
+use viewport::ViewportManager;
 
 #[cfg(test)]
 #[path = "reader_tests.rs"]
@@ -32,11 +27,7 @@ mod render_manager;
 #[path = "viewport.rs"]
 mod viewport;
 
-pub use benchmark::{BenchmarkAction as BenchmarkActionEnum, BenchmarkManager};
-pub use document_manager::DocumentManager;
 pub use editing::ToolDialog;
-pub use render_manager::RenderManager;
-pub use viewport::ViewportManager as ViewportManagerPub;
 
 pub struct State {
     pub(crate) engine: Engine,
@@ -45,9 +36,8 @@ pub struct State {
     viewport: ViewportManager,
     render: RenderManager,
     benchmark: BenchmarkManager,
-    pub(crate) navigation: crate::navigation::Navigation,
+    pub(crate) navigation: navigation::Navigation,
     pub(crate) tools: crate::features::ReaderTools,
-    path: Option<PathBuf>,
     pub(crate) editor: editing::Editor,
     pub(crate) forms: forms::Forms,
     pub(crate) dialog_open: bool,
@@ -69,7 +59,6 @@ impl State {
             benchmark: BenchmarkManager::new(benchmark),
             navigation: Default::default(),
             tools: Default::default(),
-            path: None,
             editor: Default::default(),
             forms: Default::default(),
             dialog_open: false,
@@ -85,14 +74,11 @@ impl State {
         self.reset_editor(ui);
         self.tools.reset(ui);
         self.navigation.reset(ui);
-        self.viewport.reading_page = 0;
-        self.viewport.pointer = None;
-        self.path = Some(path.clone());
+        self.viewport.reset_for_open();
         let doc = self
             .document
             .open_password(ui, &self.engine, path, password);
         self.viewport.generation += 1;
-        self.viewport.sizes.clear();
         self.render.reset_for_open();
         ui.set_tiles(ModelRc::default());
         ui.set_previews(ModelRc::default());
@@ -103,13 +89,7 @@ impl State {
         ui.set_page_count(0);
         ui.set_scroll_x(0.0);
         ui.set_scroll_y(0.0);
-        self.viewport.zoom = 1.0;
-        self.viewport.previous_view = None;
-        self.viewport.first_tile_reset(); // placeholder, first_tile is in render
-        self.viewport.current_page = usize::MAX;
-        self.render.render_error = None;
-        self.viewport.dirty = true;
-        self.benchmark.zoom_started = Instant::now();
+        self.benchmark.reset_zoom_timer();
         self.trace.event(
             "document_open_started",
             serde_json::json!({"document": doc}),
@@ -119,7 +99,7 @@ impl State {
     pub fn password(&mut self, ui: &AppWindow, password: String) {
         ui.set_password("".into());
         if ui.get_password_required()
-            && let Some(path) = self.path.clone()
+            && let Some(path) = self.document.path.clone()
         {
             self.open_password(ui, path, Some(password));
         }
@@ -130,10 +110,6 @@ impl State {
             .query(ui, &self.engine, self.document.document, query);
         self.tools
             .overlays(ui, &self.viewport.layout, self.viewport.zoom);
-    }
-
-    pub fn reader_position(&self, x: f32, y: f32, nearest: bool) -> Option<(usize, f32, f32)> {
-        self.viewport.reader_position(x, y, nearest)
     }
 
     pub fn reader_pointer(&mut self, ui: &AppWindow, x: f32, y: f32, phase: i32) {
@@ -242,7 +218,6 @@ impl State {
                 self.document.invalidate();
                 self.viewport.generation += 1;
                 self.tools.reset(ui);
-                self.path = None;
                 ui.set_loading(false);
                 ui.set_status("Open a PDF to get started".into());
                 ui.set_detail("Password entry cancelled.".into());
@@ -270,9 +245,12 @@ impl State {
                 return;
             }
             "select-all" => {
-                if ui.get_ready() && !self.sizes.is_empty() {
-                    let page = self.current_page.min(self.sizes.len() - 1);
-                    let rect = self.layout.pages[page];
+                if ui.get_ready() && !self.viewport.sizes.is_empty() {
+                    let page = self
+                        .viewport
+                        .current_page
+                        .min(self.viewport.sizes.len() - 1);
+                    let rect = self.viewport.layout.pages[page];
                     self.select_text(ui, page, 0.0, 0.0, 0);
                     self.select_text(ui, page, rect.width, rect.height, 2);
                 }
@@ -313,10 +291,10 @@ impl State {
                 ui.set_fit_page(action == "fit-page");
             }
             let old_zoom = self.viewport.zoom;
-            let old_y = self.viewport.layout.pages[current].y;
-            let offset = (-ui.get_scroll_y() - old_y).max(0.0);
+            let page_y = self.viewport.layout.pages[current].y;
+            let offset = (-ui.get_scroll_y() - page_y).max(0.0);
             self.viewport
-                .apply_zoom(ui, current, old_zoom, new_zoom, old_y, offset);
+                .apply_zoom(ui, current, old_zoom, new_zoom, offset);
             self.trace
                 .event("zoom_input", serde_json::json!({"zoom":self.viewport.zoom}));
         } else {
@@ -503,7 +481,7 @@ impl State {
         };
         let refresh_needed = self.viewport.refresh_layout(ui, &view);
         if refresh_needed || changed {
-            self.viewport.trace_event("viewport_changed", serde_json::json!({"generation":self.viewport.generation,"scroll_y":view.scroll_y,"zoom":self.viewport.zoom}));
+            self.trace.event("viewport_changed", serde_json::json!({"generation":self.viewport.generation,"scroll_y":view.scroll_y,"zoom":self.viewport.zoom}));
             self.refresh(ui, view);
         }
         if self.benchmark.enabled && self.render.first_tile {
@@ -521,7 +499,7 @@ impl State {
                 BenchmarkAction::ZoomIn => self.action(ui, "zoom-in"),
                 BenchmarkAction::Previous => self.action(ui, "previous"),
                 BenchmarkAction::Quit => {
-                    if let Some(data) = event_data {
+                    if let Some(data) = event_data.clone() {
                         self.trace.event("benchmark_complete", data);
                     }
                     let _ = slint::quit_event_loop();
@@ -581,66 +559,5 @@ impl State {
         if let Some(error) = &self.render.render_error {
             ui.set_status(error.as_str().into());
         }
-    }
-
-    // Forwarding methods for sub-modules that still take &mut State
-    pub(super) fn reset_forms(&mut self, ui: &AppWindow) {
-        self.forms.reset(ui);
-        self.forms.counter = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_millis() as u64);
-    }
-
-    pub(super) fn reset_editor(&mut self, ui: &AppWindow) {
-        self.editor = editing::Editor::default();
-        ui.set_annotations(ModelRc::default());
-        ui.set_annotation_items(ModelRc::default());
-        ui.set_can_annotate(false);
-        ui.set_can_assemble(false);
-        ui.set_file_busy(false);
-        ui.set_rename_active(false);
-        ui.set_file_message("".into());
-        ui.set_note_visible(false);
-        ui.set_note_placement(false);
-        ui.set_pending_open(false);
-        ui.set_pending_close(false);
-        ui.set_page_tools_visible(false);
-        ui.set_annotation_list_visible(false);
-        ui.set_highlight_visible(false);
-        ui.set_dirty_document(false);
-        ui.set_can_undo(false);
-        ui.set_can_redo(false);
-    }
-
-    // These are still defined on State because they access multiple managers
-    pub(super) fn form_blur(&mut self, _ui: &AppWindow) {}
-    pub(super) fn form_action(&mut self, _ui: &AppWindow, _action: &str) -> bool {
-        false
-    }
-    pub(super) fn edit_action(&mut self, _ui: &AppWindow, _action: &str) -> bool {
-        false
-    }
-    pub(super) fn edit_event(&mut self, _ui: &AppWindow, _event: &Event) -> bool {
-        false
-    }
-    pub(super) fn form_event(&mut self, _ui: &AppWindow, _event: &Event) -> bool {
-        false
-    }
-    pub(super) fn form_pointer(&mut self, _ui: &AppWindow, _x: f32, _y: f32, _phase: i32) {}
-    pub(super) fn page_point(&mut self, _ui: &AppWindow, _page: usize, _x: f32, _y: f32) {}
-    pub(super) fn activate_link(&mut self, _ui: &AppWindow, _page: usize, _x: f32, _y: f32) {}
-    pub(super) fn hover_link(&mut self, _ui: &AppWindow, _page: usize, _x: f32, _y: f32) {}
-    pub(super) fn edit_refresh(&mut self, _ui: &AppWindow, _active: &[usize]) {}
-    pub(super) fn form_refresh(&mut self, _ui: &AppWindow, _active: &[usize]) {}
-}
-
-impl ViewportManager {
-    fn first_tile_reset(&mut self) {
-        // first_tile is owned by RenderManager; this is a no-op placeholder
-    }
-
-    fn trace_event(&self, name: &str, values: serde_json::Value) {
-        // trace is owned by State; this is called from State::tick
-        let _ = (name, values);
     }
 }

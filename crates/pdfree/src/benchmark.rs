@@ -28,10 +28,10 @@ impl BenchmarkManager {
         &mut self,
         first_tile: bool,
         first_pixels_elapsed: std::time::Duration,
-        open_started_elapsed: std::time::Duration,
+        _open_started_elapsed: std::time::Duration,
         cache_bytes: usize,
-        cache_hits: usize,
-        cache_misses: usize,
+        cache_hits: u64,
+        cache_misses: u64,
     ) -> (BenchmarkAction, Option<serde_json::Value>) {
         if !self.enabled || !first_tile {
             return (BenchmarkAction::None, None);

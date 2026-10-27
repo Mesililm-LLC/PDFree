@@ -85,7 +85,7 @@ pub(crate) fn restore(bytes: &[u8], password: Option<&str>) -> Result<PdfDocumen
 }
 pub(crate) fn info(doc: &PdfDocument) -> Result<DocumentInfo, String> {
     let pages = doc.page_count().map_err(error)?;
-    if !(1..=crate::constants::MAX_EDIT_PAGES).contains(&pages) {
+    if pages <= 0 || pages as usize > crate::constants::MAX_EDIT_PAGES {
         return Err("Editing supports 1–100,000 pages".into());
     }
     let bounds = doc.load_page(0).and_then(|p| p.bounds()).map_err(error)?;
@@ -170,7 +170,7 @@ pub(crate) fn annotations(
                 }
             }
             PdfAnnotationType::Highlight => {
-                if a.quad_count().map_err(error)? > crate::constants::MAX_QUAD_COUNT {
+                if a.quad_count().map_err(error)? as usize > crate::constants::MAX_QUAD_COUNT {
                     truncated = true;
                     continue;
                 }

@@ -97,6 +97,9 @@ pub const MAX_TOTAL_STREAM_BYTES: usize = 128 * 1024 * 1024;
 /// Maximum array length in imported objects.
 pub const MAX_IMPORT_ARRAY_LEN: usize = 10_000;
 
+/// Maximum appearance states inspected in a PDF widget dictionary.
+pub const MAX_APPEARANCE_STATES: usize = 10_000;
+
 /// Maximum dictionary length in imported objects.
 pub const MAX_IMPORT_DICT_LEN: usize = 2000;
 
@@ -211,9 +214,6 @@ pub const MAX_CORNER_DIFF: usize = 3;
 /// Minimum fill ratio for round shape acceptance.
 pub const MIN_FILL_RATIO: usize = 65;
 
-/// Crop top offset in PDF points.
-pub const CROP_TOP_OFFSET: f32 = 18.0;
-
 /// Crop top padding in PDF points.
 pub const CROP_TOP_PAD: f32 = 50.0;
 
@@ -318,9 +318,6 @@ pub const DIRECT_LABEL_LEFT_MAX: f32 = 300.0;
 
 /// Radio group top maximum in PDF points.
 pub const RADIO_GROUP_TOP_MAX: f32 = 180.0;
-
-/// Radio group top minimum in PDF points.
-pub const RADIO_GROUP_TOP_MIN: f32 = 180.0;
 
 /// Radio group left maximum in PDF points.
 pub const RADIO_GROUP_LEFT_MAX: f32 = 30.0;

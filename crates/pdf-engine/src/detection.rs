@@ -342,7 +342,7 @@ fn collect_text_line(
         } else if c.is_whitespace() {
             flush_word(words, &mut value, &mut word_rect);
         } else {
-            if value.len() > 4096 {
+            if value.len() > crate::constants::MAX_VALUE_LEN {
                 flush_word(words, &mut value, &mut word_rect);
             }
             value.push(c);
@@ -466,7 +466,7 @@ fn ocr(input: &PageInput, factor: u32, psm: &str, cancel: &AtomicBool) -> Result
     let mut text = String::new();
     File::open(output.with_extension("tsv"))
         .map_err(err)?
-        .take(crate::constants::OCR_OUTPUT_LIMIT)
+        .take(crate::constants::OCR_OUTPUT_LIMIT as u64)
         .read_to_string(&mut text)
         .map_err(err)?;
     if text.len() > crate::constants::OCR_OUTPUT_LIMIT - 1 {
@@ -617,18 +617,15 @@ fn label(words: &[Word], r: TextRect, checkbox: bool) -> Option<(String, f32)> {
             let above = r.top - w.rect.bottom;
             let right = w.rect.left - r.right;
             let distance = if checkbox
-                && right >= -2.
-                && right <= crate::constants::CHECKBOX_RIGHT_MAX
+                && (-2. ..=crate::constants::CHECKBOX_RIGHT_MAX).contains(&right)
                 && vertical < crate::constants::CHECKBOX_VERTICAL_TOLERANCE
             {
                 right + vertical * 2.
-            } else if left >= -3.
-                && left <= crate::constants::CHECKBOX_LEFT_MAX
+            } else if (-3. ..=crate::constants::CHECKBOX_LEFT_MAX).contains(&left)
                 && vertical < crate::constants::CHECKBOX_ABOVE_MAX
             {
                 left + vertical * 2.
-            } else if above >= -3.
-                && above <= crate::constants::CHECKBOX_ABOVE_MAX_ALT
+            } else if (-3. ..=crate::constants::CHECKBOX_ABOVE_MAX_ALT).contains(&above)
                 && w.rect.left < r.right
                 && w.rect.right > r.left - crate::constants::CHECKBOX_LEFT_MIN
             {
@@ -709,7 +706,7 @@ fn raster_shapes(input: &PageInput) -> Vec<Shape> {
             * (sum_bg / weight - (sum - sum_bg) / (total - weight)).powi(2);
         if variance > best {
             best = variance;
-            threshold = (i + crate::constants::THRESHOLD_OFFSET).clamp(
+            threshold = (i + crate::constants::THRESHOLD_OFFSET as usize).clamp(
                 crate::constants::THRESHOLD_MIN as usize,
                 crate::constants::THRESHOLD_MAX as usize,
             ) as u8;
@@ -1146,7 +1143,7 @@ fn candidates(input: &PageInput, words: &[Word]) -> Vec<DetectedField> {
                 confidence: DetectionConfidence { score, origin: r },
             });
         }
-        if found.len() >= 512 {
+        if found.len() >= crate::constants::MAX_CANDIDATE_FIELDS {
             break;
         }
     }
@@ -1224,7 +1221,12 @@ fn recognize(mut input: PageInput, cancel: &AtomicBool) -> Result<Vec<DetectedFi
     // has digital text, unavailable OCR must not discard first-pass fields.
     let recheck = if found.iter().any(|f| f.spec.review) {
         let (crop, offset) = recheck_crop(&input, &found);
-        match ocr(&crop, 1, "11", cancel) {
+        match ocr(
+            &crop,
+            crate::constants::OCR_FACTOR_SECONDARY,
+            crate::constants::OCR_PSM_SECONDARY,
+            cancel,
+        ) {
             Ok(second) => Some((second, offset)),
             Err(error) if input.words.is_empty() => return Err(error),
             Err(_) => None,

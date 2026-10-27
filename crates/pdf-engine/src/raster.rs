@@ -16,14 +16,16 @@ pub(crate) fn render(
             "Invalid tile dimensions or rotation".into(),
         ));
     }
-    let result = list.render(
-        key.width,
-        key.height,
-        key.rotation,
-        key.scale_milli,
-        key.x as f32,
-        key.y as f32,
-    )?;
+    let result = list
+        .render(
+            key.width,
+            key.height,
+            key.rotation as u32,
+            key.scale_milli,
+            key.x as f32,
+            key.y as f32,
+        )
+        .map_err(EngineError::Render)?;
     Ok(PixelTile {
         width: key.width,
         height: key.height,
@@ -60,7 +62,7 @@ mod tests {
             height: 100,
         };
         let backend_list: Box<dyn DisplayListBackend> =
-            Box::new(crate::backend::mupdf::MupdfDisplayList { list });
+            Box::new(crate::backend::mupdf::MupdfDisplayList::new(list));
         let tile = render(backend_list.as_ref(), key).unwrap();
         for y in 0..100usize {
             for x in 0..100usize {

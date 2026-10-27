@@ -18,11 +18,6 @@ impl DocumentManager {
         }
     }
 
-    /// Open a document (without password).
-    pub fn open(&mut self, ui: &AppWindow, engine: &Engine, path: std::path::PathBuf) {
-        self.open_password(ui, engine, path, None);
-    }
-
     /// Open a document with an optional password.
     /// Returns the new document id.
     pub fn open_password(

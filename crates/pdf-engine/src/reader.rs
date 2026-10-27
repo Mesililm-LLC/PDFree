@@ -6,9 +6,6 @@ use std::{
 };
 use viewer_core::{PageText, PixelTile, SearchHit, TextGlyph, TextRect, TileKey};
 
-const MAX_GLYPHS: usize = 100_000;
-const MAX_HITS: usize = 10_000;
-
 #[derive(Default)]
 pub(crate) struct Reader {
     text: VecDeque<usize>,
@@ -135,7 +132,7 @@ impl Reader {
                 text.search_cb(&task.query, &mut hits, |hits, quads| {
                     if !shared.current_document(document)
                         || shared.search.load(Ordering::Acquire) != task.id
-                        || task.hits + hits.len() >= MAX_HITS
+                        || task.hits + hits.len() >= crate::constants::MAX_HITS
                     {
                         return SearchHitResponse::AbortSearch;
                     }
@@ -156,7 +153,7 @@ impl Reader {
             task.cursor += 1;
         }
         task.hits += hits.len();
-        let truncated = task.hits >= MAX_HITS;
+        let truncated = task.hits >= crate::constants::MAX_HITS;
         let done = task.query.is_empty() || task.cursor >= count || truncated;
         let search_id = task.id;
         let event = Event::SearchPage {
@@ -206,7 +203,7 @@ fn extract(doc: &Document, page: usize) -> Result<PageText, mupdf::Error> {
     for block in text.blocks() {
         for line in block.lines() {
             for ch in line.chars() {
-                if output.glyphs.len() == MAX_GLYPHS {
+                if output.glyphs.len() == crate::constants::MAX_GLYPHS {
                     output.truncated = true;
                     return Ok(output);
                 }

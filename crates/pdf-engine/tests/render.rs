@@ -52,7 +52,7 @@ fn real_pdf_renders_clipped_pixels_on_workers() {
                     pixels.rgba.len(),
                     (pixels.width * pixels.height * 4) as usize
                 );
-                colored |= pixels.rgba.chunks_exact(4).any(|p| p[0] != p[1]);
+                colored |= pixels.rgba.as_chunks::<4>().0.iter().any(|p| p[0] != p[1]);
                 tiles += 1;
             }
             Event::Error { error, .. } => panic!("{error}"),
@@ -213,7 +213,12 @@ fn corpus_first_pages_render_without_background_ui_work() {
             match engine.events.recv_timeout(Duration::from_secs(20)).unwrap() {
                 Event::Tile { key, pixels, .. } if key.document == document => {
                     assert!(!pixels.rgba.is_empty());
-                    has_ink |= pixels.rgba.chunks_exact(4).any(|pixel| pixel[0] < 240);
+                    has_ink |= pixels
+                        .rgba
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .any(|pixel| pixel[0] < 240);
                     completed += 1;
                     if completed == tile_count {
                         break;

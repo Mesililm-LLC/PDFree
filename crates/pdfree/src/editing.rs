@@ -113,9 +113,9 @@ impl State {
         if !std::mem::take(&mut self.editor.save_dialog) {
             return None;
         }
-        self.path.as_ref().map(|p| {
+        self.document.path.as_ref().map(|p| {
             (
-                self.document,
+                self.document.document,
                 p.with_file_name(format!(
                     "{} copy.pdf",
                     p.file_stem().unwrap_or_default().to_string_lossy()
@@ -124,7 +124,7 @@ impl State {
         })
     }
     pub fn save_dialog_result(&mut self, ui: &AppWindow, document: u64, path: Option<PathBuf>) {
-        if document != self.document {
+        if document != self.document.document {
             return;
         }
         if let Some(path) = path {
@@ -134,10 +134,13 @@ impl State {
         }
     }
     pub fn take_tool_dialog(&mut self) -> Option<(u64, ToolDialog, PathBuf)> {
-        self.editor
-            .tool_dialog
-            .take()
-            .map(|kind| (self.document, kind, self.path.clone().unwrap_or_default()))
+        self.editor.tool_dialog.take().map(|kind| {
+            (
+                self.document.document,
+                kind,
+                self.document.path.clone().unwrap_or_default(),
+            )
+        })
     }
     pub fn tool_dialog_result(
         &mut self,
@@ -146,13 +149,13 @@ impl State {
         kind: ToolDialog,
         paths: Vec<PathBuf>,
     ) {
-        if document != self.document || paths.is_empty() {
+        if document != self.document.document || paths.is_empty() {
             return;
         }
         match kind {
             ToolDialog::Insert | ToolDialog::Merge => {
                 let at = if matches!(kind, ToolDialog::Merge) {
-                    self.sizes.len()
+                    self.viewport.sizes.len()
                 } else {
                     self.editor.dialog_page + 1
                 };
@@ -163,14 +166,14 @@ impl State {
                 let path = paths.into_iter().next().unwrap();
                 let ok = match kind {
                     ToolDialog::Extract => self.engine.extract(
-                        self.document,
+                        self.document.document,
                         self.editor.revision,
                         self.editor.operation,
                         path,
                         self.editor.dialog_pages.clone(),
                     ),
                     _ => self.engine.split(
-                        self.document,
+                        self.document.document,
                         self.editor.revision,
                         self.editor.operation,
                         path,
@@ -197,7 +200,7 @@ impl State {
         self.file_started(
             ui,
             self.engine
-                .save_as(self.document, self.editor.operation, path, vec![]),
+                .save_as(self.document.document, self.editor.operation, path, vec![]),
             "Saving PDF copy…",
         );
     }
@@ -208,7 +211,8 @@ impl State {
         self.editor.operation += 1;
         self.file_started(
             ui,
-            self.engine.save(self.document, self.editor.operation),
+            self.engine
+                .save(self.document.document, self.editor.operation),
             "Saving PDF…",
         );
     }
@@ -218,6 +222,7 @@ impl State {
         }
         self.editor.operation += 1;
         let stem = self
+            .document
             .path
             .as_ref()
             .and_then(|p| p.file_stem())
@@ -243,7 +248,7 @@ impl State {
         self.file_started(
             ui,
             self.engine.print_copy(
-                self.document,
+                self.document.document,
                 self.editor.revision,
                 self.editor.operation,
                 target,
@@ -277,17 +282,17 @@ impl State {
         self.file_started(
             ui,
             self.engine
-                .rename(self.document, self.editor.operation, name),
+                .rename(self.document.document, self.editor.operation, name),
             "Saving edits and renaming PDF…",
         );
     }
     pub(super) fn submit_edit(&mut self, ui: &AppWindow, command: EditCommand) {
         self.editor.operation += 1;
         let ok = self.engine.edit(
-            self.document,
+            self.document.document,
             self.editor.revision,
             self.editor.operation,
-            self.generation + 1,
+            self.viewport.generation + 1,
             command,
         );
         self.file_started(ui, ok, "Applying change…");
@@ -307,10 +312,12 @@ impl State {
         }
     }
     fn page_now(&self) -> usize {
-        if self.sizes.is_empty() {
+        if self.viewport.sizes.is_empty() {
             0
         } else {
-            self.current_page.min(self.sizes.len() - 1)
+            self.viewport
+                .current_page
+                .min(self.viewport.sizes.len() - 1)
         }
     }
     pub(super) fn edit_action(&mut self, ui: &AppWindow, action: &str) -> bool {
@@ -438,7 +445,7 @@ impl State {
                 if let Some(Annotation::Highlight { page, mut rects }) =
                     self.tools.selected_highlight()
                 {
-                    if let Some(size) = self.sizes.get(page) {
+                    if let Some(size) = self.viewport.sizes.get(page) {
                         for r in &mut rects {
                             r.left = r.left.max(0.0);
                             r.top = r.top.max(0.0);
@@ -459,7 +466,7 @@ impl State {
                 }
             }
             "rotate-left" | "rotate-right" | "delete-pages" | "extract-pages" => {
-                match parse_pages(ui.get_page_range().as_str(), self.sizes.len()) {
+                match parse_pages(ui.get_page_range().as_str(), self.viewport.sizes.len()) {
                     Err(m) => ui.set_file_message(m.into()),
                     Ok(pages) => match action {
                         "extract-pages" if ui.get_can_copy() && ui.get_can_assemble() => {
@@ -483,7 +490,7 @@ impl State {
             }
             "move-page" if ui.get_can_assemble() => {
                 match ui.get_move_to().trim().parse::<usize>() {
-                    Ok(to) if to > 0 && to <= self.sizes.len() => self.submit_edit(
+                    Ok(to) if to > 0 && to <= self.viewport.sizes.len() => self.submit_edit(
                         ui,
                         EditCommand::Move {
                             page: self.page_now(),
@@ -509,7 +516,7 @@ impl State {
             }
             "split-pdf" if ui.get_can_copy() && ui.get_can_assemble() => {
                 let page = self.page_now();
-                if page + 1 >= self.sizes.len() {
+                if page + 1 >= self.viewport.sizes.len() {
                     ui.set_file_message("Navigate to a page before the last page to split.".into());
                 } else {
                     self.editor.dialog_page = page;
@@ -528,9 +535,9 @@ impl State {
         {
             return;
         }
-        let scale = self.zoom * 96.0 / 72.0;
+        let scale = self.viewport.zoom * 96.0 / 72.0;
         let (x, y) = (x / scale, y / scale);
-        if let Some(size) = self.sizes.get(page)
+        if let Some(size) = self.viewport.sizes.get(page)
             && x.is_finite()
             && y.is_finite()
             && x >= 0.0
@@ -612,7 +619,7 @@ impl State {
                 page,
                 annotations,
                 truncated,
-            } if *document == self.document
+            } if *document == self.document.document
                 && *revision == self.editor.revision
                 && self.editor.wanted.contains(page) =>
             {
@@ -632,7 +639,7 @@ impl State {
                 can_undo,
                 can_redo,
                 focus_page,
-            } if *document == self.document && *operation == self.editor.operation => {
+            } if *document == self.document.document && *operation == self.editor.operation => {
                 self.editor.revision = *revision;
                 self.editor.dirty = *dirty;
                 self.editor.notes.clear();
@@ -646,8 +653,8 @@ impl State {
                 ui.set_note_visible(false);
                 ui.set_highlight_visible(false);
                 ui.set_file_message("Change applied. Ctrl+S to save.".into());
-                self.generation = self.generation.max(*generation);
-                self.sizes = vec![info.first_page; info.pages];
+                self.viewport.generation = self.viewport.generation.max(*generation);
+                self.viewport.sizes = vec![info.first_page; info.pages];
                 self.tools.reset(ui);
                 ui.set_can_copy(info.can_copy);
                 ui.set_can_form(info.can_form);
@@ -659,21 +666,21 @@ impl State {
                 ui.set_page_numbers(ModelRc::new(VecModel::from(
                     (1..=info.pages as i32).collect::<Vec<i32>>(),
                 )));
-                self.cache.clear();
-                self.images.clear();
-                self.previews.clear();
+                self.render.cache.clear();
+                self.render.images.clear();
+                self.render.previews.clear();
                 ui.set_tiles(ModelRc::default());
                 ui.set_previews(ModelRc::default());
                 ui.set_annotations(ModelRc::default());
-                self.layout = Layout::new(
-                    &self.sizes,
-                    self.zoom,
+                self.viewport.layout = Layout::new(
+                    &self.viewport.sizes,
+                    self.viewport.zoom,
                     (ui.get_view_width() - 14.0).max(1.0),
                 );
                 self.navigate(ui, (*focus_page).min(info.pages - 1));
-                self.previous_view = None;
-                self.dirty = true;
-                self.render_error = None;
+                self.viewport.previous_view = None;
+                self.viewport.dirty = true;
+                self.render.render_error = None;
                 ui.invoke_focus_document();
                 true
             }
@@ -682,7 +689,7 @@ impl State {
                 operation,
                 path,
                 kind,
-            } if *document == self.document && *operation == self.editor.operation => {
+            } if *document == self.document.document && *operation == self.editor.operation => {
                 ui.set_file_busy(false);
                 if *kind == FileAction::Print {
                     ui.set_file_message(match self.invoke_print(path) {
@@ -693,7 +700,7 @@ impl State {
                     kind,
                     FileAction::Save | FileAction::SaveAs | FileAction::Rename
                 ) {
-                    self.path = Some(path.clone());
+                    self.document.path = Some(path.clone());
                     ui.set_document_name(
                         path.file_name()
                             .unwrap_or_default()
@@ -726,7 +733,7 @@ impl State {
                 document,
                 operation,
                 message,
-            } if *document == self.document && *operation == self.editor.operation => {
+            } if *document == self.document.document && *operation == self.editor.operation => {
                 ui.set_file_busy(false);
                 self.editor.continue_after_save = false;
                 ui.set_file_message(message.as_str().into());
@@ -741,17 +748,17 @@ impl State {
             self.editor.notes.retain(|p, _| wanted.contains(p));
             self.editor.wanted = wanted.clone();
             self.engine
-                .annotation_pages(self.document, self.editor.revision, wanted);
+                .annotation_pages(self.document.document, self.editor.revision, wanted);
         }
         self.edit_overlays(ui);
     }
     fn edit_overlays(&self, ui: &AppWindow) {
-        let scale = self.zoom * 96.0 / 72.0;
+        let scale = self.viewport.zoom * 96.0 / 72.0;
         let mut surfaces = Vec::new();
         let mut items = Vec::new();
         for (index, a) in self.editor.notes.values().flatten().enumerate() {
             let p = a.annotation.page();
-            let Some(page) = self.layout.pages.get(p) else {
+            let Some(page) = self.viewport.layout.pages.get(p) else {
                 continue;
             };
             let label = match &a.annotation {

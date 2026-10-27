@@ -120,10 +120,6 @@ pub(crate) fn outlines(doc: &Document) -> Result<(Vec<OutlineEntry>, bool), Stri
     Ok((entries, truncated))
 }
 
-/// MuPDF-specific outline extraction used by the DocumentBackend trait.
-pub(crate) fn outlines_mupdf(doc: &Document) -> Result<(Vec<OutlineEntry>, bool), String> {
-    outlines(doc)
-}
 pub(crate) fn links(doc: &Document, page: usize) -> Result<(Vec<PageLink>, bool), String> {
     let page = doc.load_page(page as i32).map_err(|e| e.to_string())?;
     let bounds = page.bounds().map_err(|e| e.to_string())?;
