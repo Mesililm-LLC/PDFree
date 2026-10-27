@@ -601,10 +601,11 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                                     Err("Document changed before rename completed".into())
                                 } else {
                                     lists.clear();
+                                    drop(backend.take());
                                     drop(document.take());
                                     let (baseline, result) = prepared.commit(&source_path);
                                     document = Some(baseline);
-                                    match result {
+                                    let result = match result {
                                         Ok(path) => {
                                             source_path = path.clone();
                                             if let Some(h) = journal.as_mut() {
@@ -623,7 +624,10 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                                             source_path = failure.path;
                                             Err(failure.message)
                                         }
-                                    }
+                                    };
+                                    backend = open_document(&source_path, session_password.as_deref())
+                                        .ok();
+                                    result
                                 }
                             }
                         }
@@ -654,6 +658,7 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                                     // Release all page/document handles before Windows moves the open file.
                                     lists.clear();
                                     notes_cache.clear();
+                                    drop(backend.take());
                                     document = None;
                                     let moved =
                                         crate::files::move_no_replace(&source_path, &target);
@@ -666,7 +671,7 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                                         &reopen_path,
                                         session_password.as_deref(),
                                     );
-                                    match reopened {
+                                    let result = match reopened {
                                         Ok(doc) => {
                                             document = Some(doc);
                                             match moved {
@@ -715,7 +720,15 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                                                 }
                                             }
                                         }
+                                    };
+                                    if document.is_some() {
+                                        backend = open_document(
+                                            &source_path,
+                                            session_password.as_deref(),
+                                        )
+                                        .ok();
                                     }
+                                    result
                                 }
                             }
                         }
