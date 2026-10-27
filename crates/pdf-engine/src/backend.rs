@@ -62,15 +62,18 @@ pub trait DocumentBackend: Send + Sync {
 }
 
 /// Open a PDF document from a file path using the MuPDF backend.
-pub fn open_document(path: &Path, password: Option<&str>) -> Result<Box<dyn DocumentBackend>, String> {
+pub fn open_document(
+    path: &Path,
+    password: Option<&str>,
+) -> Result<Box<dyn DocumentBackend>, String> {
     crate::backend::mupdf::MupdfDocument::open(path, password)
 }
 
 /// MuPDF implementation of the backend traits.
 pub mod mupdf {
     use super::*;
-    use mupdf::{Colorspace, Device, DisplayList, IRect, Matrix, Page, Pixmap, Rect};
     use mupdf::pdf::PdfDocument;
+    use mupdf::{Colorspace, Device, DisplayList, IRect, Matrix, Page, Pixmap, Rect};
     use std::path::Path;
 
     pub struct MupdfDocument {
@@ -78,7 +81,10 @@ pub mod mupdf {
     }
 
     impl MupdfDocument {
-        pub fn open(path: &Path, password: Option<&str>) -> Result<Box<dyn DocumentBackend>, String> {
+        pub fn open(
+            path: &Path,
+            password: Option<&str>,
+        ) -> Result<Box<dyn DocumentBackend>, String> {
             let path_str = path.to_str().ok_or("Path is not valid Unicode")?;
             let doc = Document::open(path_str)
                 .and_then(PdfDocument::try_from)
@@ -100,7 +106,10 @@ pub mod mupdf {
 
     impl DocumentBackend for MupdfDocument {
         fn page_count(&self) -> Result<usize, String> {
-            self.doc.page_count().map_err(|e| e.to_string()).map(|c| c as usize)
+            self.doc
+                .page_count()
+                .map_err(|e| e.to_string())
+                .map(|c| c as usize)
         }
 
         fn needs_password(&self) -> Result<bool, String> {
@@ -117,23 +126,28 @@ pub mod mupdf {
         }
 
         fn info(&self) -> Result<DocumentInfo, String> {
-            crate::forms::security(&self.doc).map(|(signed, xfa, _)| {
-                let writable = !signed && !xfa;
-                let permissions = crate::forms::permissions(&self.doc);
-                DocumentInfo {
-                    can_form: writable && permissions.contains(mupdf::pdf::Permission::FORM),
-                    can_edit: writable
-                        && !xfa
-                        && permissions
-                            .contains(mupdf::pdf::Permission::MODIFY | mupdf::pdf::Permission::ANNOTATE),
-                    signed,
-                    can_copy: permissions.contains(mupdf::pdf::Permission::COPY),
-                    can_annotate: writable && permissions.contains(mupdf::pdf::Permission::ANNOTATE),
-                    can_assemble: writable && permissions.contains(mupdf::pdf::Permission::ASSEMBLE),
-                    pages: self.page_count().unwrap_or(0),
-                    first_page: PageSize::new(0., 0.),
-                }
-            }).map_err(|e| e.to_string())
+            crate::forms::security(&self.doc)
+                .map(|(signed, xfa, _)| {
+                    let writable = !signed && !xfa;
+                    let permissions = crate::forms::permissions(&self.doc);
+                    DocumentInfo {
+                        can_form: writable && permissions.contains(mupdf::pdf::Permission::FORM),
+                        can_edit: writable
+                            && !xfa
+                            && permissions.contains(
+                                mupdf::pdf::Permission::MODIFY | mupdf::pdf::Permission::ANNOTATE,
+                            ),
+                        signed,
+                        can_copy: permissions.contains(mupdf::pdf::Permission::COPY),
+                        can_annotate: writable
+                            && permissions.contains(mupdf::pdf::Permission::ANNOTATE),
+                        can_assemble: writable
+                            && permissions.contains(mupdf::pdf::Permission::ASSEMBLE),
+                        pages: self.page_count().unwrap_or(0),
+                        first_page: PageSize::new(0., 0.),
+                    }
+                })
+                .map_err(|e| e.to_string())
         }
 
         fn outlines(&self) -> Result<(Vec<OutlineEntry>, bool), String> {
@@ -163,7 +177,10 @@ pub mod mupdf {
         }
 
         fn to_display_list(&self, build: bool) -> Result<Box<dyn DisplayListBackend>, String> {
-            let list = self.page.to_display_list(build).map_err(|e| e.to_string())?;
+            let list = self
+                .page
+                .to_display_list(build)
+                .map_err(|e| e.to_string())?;
             Ok(Box::new(MupdfDisplayList { list }))
         }
 
@@ -200,14 +217,7 @@ pub mod mupdf {
                 IRect::new(0, 0, width as i32, height as i32),
             )?;
             let scale = scale_milli as f32 / 1000.0;
-            let matrix = Matrix::new(
-                scale,
-                0.0,
-                0.0,
-                scale,
-                -x0 * scale - x,
-                -y0 * scale - y,
-            );
+            let matrix = Matrix::new(scale, 0.0, 0.0, scale, -x0 * scale - x, -y0 * scale - y);
             self.list.run(
                 &device,
                 &matrix,

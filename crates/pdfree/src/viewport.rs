@@ -202,11 +202,7 @@ impl ViewportManager {
     }
 
     /// Update layout based on viewport changes. Returns whether a UI refresh is needed.
-    pub fn refresh_layout(
-        &mut self,
-        ui: &AppWindow,
-        view: &viewer_core::Viewport,
-    ) -> bool {
+    pub fn refresh_layout(&mut self, ui: &AppWindow, view: &viewer_core::Viewport) -> bool {
         let signature = [
             view.width,
             view.height,

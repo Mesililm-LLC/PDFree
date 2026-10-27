@@ -77,7 +77,10 @@ impl BenchmarkManager {
         document: u64,
         open_started_elapsed: std::time::Duration,
     ) -> Option<serde_json::Value> {
-        if self.enabled && document == 0 && open_started_elapsed > std::time::Duration::from_millis(600) {
+        if self.enabled
+            && document == 0
+            && open_started_elapsed > std::time::Duration::from_millis(600)
+        {
             return Some(serde_json::json!({
                 "empty_window": true,
                 "cache_bytes": 0,

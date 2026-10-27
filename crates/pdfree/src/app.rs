@@ -9,12 +9,18 @@ use std::{
     path::PathBuf,
     time::{Duration, Instant},
 };
-use viewer_core::{Layout, PageSize, ReadingMode, TileCache, TileKey, Viewport, accept_result, clamp_zoom};
+use viewer_core::{
+    Layout, PageSize, ReadingMode, TileCache, TileKey, Viewport, accept_result, clamp_zoom,
+};
 
 #[cfg(test)]
 #[path = "reader_tests.rs"]
 mod reader_tests;
 
+#[path = "benchmark.rs"]
+mod benchmark;
+#[path = "document_manager.rs"]
+mod document_manager;
 #[path = "editing.rs"]
 mod editing;
 #[path = "forms.rs"]
@@ -23,17 +29,13 @@ mod forms;
 mod navigation;
 #[path = "render_manager.rs"]
 mod render_manager;
-#[path = "document_manager.rs"]
-mod document_manager;
-#[path = "benchmark.rs"]
-mod benchmark;
 #[path = "viewport.rs"]
 mod viewport;
 
+pub use benchmark::{BenchmarkAction as BenchmarkActionEnum, BenchmarkManager};
+pub use document_manager::DocumentManager;
 pub use editing::ToolDialog;
 pub use render_manager::RenderManager;
-pub use document_manager::DocumentManager;
-pub use benchmark::{BenchmarkManager, BenchmarkAction as BenchmarkActionEnum};
 pub use viewport::ViewportManager as ViewportManagerPub;
 
 pub struct State {
@@ -86,7 +88,9 @@ impl State {
         self.viewport.reading_page = 0;
         self.viewport.pointer = None;
         self.path = Some(path.clone());
-        let doc = self.document.open_password(ui, &self.engine, path, password);
+        let doc = self
+            .document
+            .open_password(ui, &self.engine, path, password);
         self.viewport.generation += 1;
         self.viewport.sizes.clear();
         self.render.reset_for_open();
@@ -122,8 +126,10 @@ impl State {
     }
 
     pub fn search(&mut self, ui: &AppWindow, query: String) {
-        self.tools.query(ui, &self.engine, self.document.document, query);
-        self.tools.overlays(ui, &self.viewport.layout, self.viewport.zoom);
+        self.tools
+            .query(ui, &self.engine, self.document.document, query);
+        self.tools
+            .overlays(ui, &self.viewport.layout, self.viewport.zoom);
     }
 
     pub fn reader_position(&self, x: f32, y: f32, nearest: bool) -> Option<(usize, f32, f32)> {
@@ -153,7 +159,8 @@ impl State {
             }
         } else if phase == 0 {
             self.tools.clear_selection(ui);
-            self.tools.overlays(ui, &self.viewport.layout, self.viewport.zoom);
+            self.tools
+                .overlays(ui, &self.viewport.layout, self.viewport.zoom);
         }
     }
 
@@ -202,9 +209,16 @@ impl State {
             .unwrap_or(page);
         let end = self.viewport.layout.pages[target];
         self.viewport.pointer = if phase == 2 { None } else { Some((page, x, y)) };
+        self.tools.select(
+            ui,
+            target,
+            doc_x - end.x,
+            doc_y - end.y,
+            phase,
+            self.viewport.zoom,
+        );
         self.tools
-            .select(ui, target, doc_x - end.x, doc_y - end.y, phase, self.viewport.zoom);
-        self.tools.overlays(ui, &self.viewport.layout, self.viewport.zoom);
+            .overlays(ui, &self.viewport.layout, self.viewport.zoom);
         self.viewport.dirty = true;
     }
 
@@ -275,10 +289,16 @@ impl State {
                 if let Some((page, top)) = self.tools.next_hit(action == "search-previous") {
                     self.navigate(ui, page);
                     ui.set_scroll_y(
-                        -(self.viewport.layout.pages[page].y + top * self.viewport.zoom * 96.0 / 72.0 - 60.0)
-                            .clamp(0.0, (self.viewport.layout.height - ui.get_view_height()).max(0.0)),
+                        -(self.viewport.layout.pages[page].y
+                            + top * self.viewport.zoom * 96.0 / 72.0
+                            - 60.0)
+                            .clamp(
+                                0.0,
+                                (self.viewport.layout.height - ui.get_view_height()).max(0.0),
+                            ),
                     );
-                    self.tools.overlays(ui, &self.viewport.layout, self.viewport.zoom);
+                    self.tools
+                        .overlays(ui, &self.viewport.layout, self.viewport.zoom);
                 }
                 return;
             }
@@ -295,7 +315,8 @@ impl State {
             let old_zoom = self.viewport.zoom;
             let old_y = self.viewport.layout.pages[current].y;
             let offset = (-ui.get_scroll_y() - old_y).max(0.0);
-            self.viewport.apply_zoom(ui, current, old_zoom, new_zoom, old_y, offset);
+            self.viewport
+                .apply_zoom(ui, current, old_zoom, new_zoom, old_y, offset);
             self.trace
                 .event("zoom_input", serde_json::json!({"zoom":self.viewport.zoom}));
         } else {
@@ -315,9 +336,11 @@ impl State {
                 .event(ui, self.document.document, self.editor.revision, &event);
             changed |= self.edit_event(ui, &event);
             changed |= self.form_event(ui, &event);
-            if matches!(&event, Event::Changed { document, .. } if *document == self.document.document) {
+            if matches!(&event, Event::Changed { document, .. } if *document == self.document.document)
+            {
                 self.navigation.reset(ui);
-                self.engine.outlines(self.document.document, self.editor.revision);
+                self.engine
+                    .outlines(self.document.document, self.editor.revision);
                 self.viewport.reading_page = self
                     .viewport
                     .reading_page
@@ -331,7 +354,8 @@ impl State {
                     elapsed,
                 } if document == self.document.document => {
                     self.navigation.reset(ui);
-                    self.engine.outlines(self.document.document, self.editor.revision);
+                    self.engine
+                        .outlines(self.document.document, self.editor.revision);
                     self.viewport.sizes = vec![info.first_page; info.pages];
                     ui.set_page_count(info.pages as i32);
                     ui.set_page_numbers(ModelRc::new(VecModel::from(
@@ -388,7 +412,8 @@ impl State {
                         self.trace.event("tile_available_to_ui", serde_json::json!({"page":key.page,"render_ms":elapsed.as_secs_f64()*1000.0,"generation":generation}));
                         changed = true;
                     } else {
-                        self.trace.event("stale_tile_discarded", serde_json::json!({}));
+                        self.trace
+                            .event("stale_tile_discarded", serde_json::json!({}));
                     }
                 }
                 Event::Error { document, error } if document == self.document.document => {
@@ -424,17 +449,21 @@ impl State {
             }
         }
         if self.viewport.sizes.is_empty() {
-            if let Some(event_data) = self
-                .benchmark
-                .benchmark_empty_window(self.document.document, self.document.open_started.elapsed())
-            {
+            if let Some(event_data) = self.benchmark.benchmark_empty_window(
+                self.document.document,
+                self.document.open_started.elapsed(),
+            ) {
                 self.trace.event("benchmark_complete", event_data);
                 let _ = slint::quit_event_loop();
             }
             return;
         }
-        self.tools
-            .thumbnails(ui, &self.engine, self.document.document, self.viewport.sizes.len());
+        self.tools.thumbnails(
+            ui,
+            &self.engine,
+            self.document.document,
+            self.viewport.sizes.len(),
+        );
         if !self.render.previews.is_empty()
             && self.benchmark.zoom_started.elapsed() > Duration::from_millis(750)
         {
@@ -454,8 +483,10 @@ impl State {
             };
             if delta != 0. {
                 let old = -ui.get_scroll_y();
-                let next =
-                    (old + delta).clamp(0., (self.viewport.layout.height - ui.get_view_height()).max(0.));
+                let next = (old + delta).clamp(
+                    0.,
+                    (self.viewport.layout.height - ui.get_view_height()).max(0.),
+                );
                 ui.set_scroll_y(-next);
                 if next != old {
                     self.select_text(ui, page, x, y + next - old, 1);
@@ -583,10 +614,18 @@ impl State {
 
     // These are still defined on State because they access multiple managers
     pub(super) fn form_blur(&mut self, _ui: &AppWindow) {}
-    pub(super) fn form_action(&mut self, _ui: &AppWindow, _action: &str) -> bool { false }
-    pub(super) fn edit_action(&mut self, _ui: &AppWindow, _action: &str) -> bool { false }
-    pub(super) fn edit_event(&mut self, _ui: &AppWindow, _event: &Event) -> bool { false }
-    pub(super) fn form_event(&mut self, _ui: &AppWindow, _event: &Event) -> bool { false }
+    pub(super) fn form_action(&mut self, _ui: &AppWindow, _action: &str) -> bool {
+        false
+    }
+    pub(super) fn edit_action(&mut self, _ui: &AppWindow, _action: &str) -> bool {
+        false
+    }
+    pub(super) fn edit_event(&mut self, _ui: &AppWindow, _event: &Event) -> bool {
+        false
+    }
+    pub(super) fn form_event(&mut self, _ui: &AppWindow, _event: &Event) -> bool {
+        false
+    }
     pub(super) fn form_pointer(&mut self, _ui: &AppWindow, _x: f32, _y: f32, _phase: i32) {}
     pub(super) fn page_point(&mut self, _ui: &AppWindow, _page: usize, _x: f32, _y: f32) {}
     pub(super) fn activate_link(&mut self, _ui: &AppWindow, _page: usize, _x: f32, _y: f32) {}

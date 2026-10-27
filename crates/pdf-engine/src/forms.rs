@@ -237,7 +237,11 @@ fn button_values(doc: &PdfDocument, field: i32) -> Result<HashSet<String>> {
             && let Some(states) = ap.get_dict("N").map_err(err)?
             && states.is_dict().map_err(err)?
         {
-            for i in 0..states.dict_len().map_err(err)?.min(crate::constants::MAX_APPEARANCE_STATES) {
+            for i in 0..states
+                .dict_len()
+                .map_err(err)?
+                .min(crate::constants::MAX_APPEARANCE_STATES)
+            {
                 let k = states
                     .get_dict_key(i as i32)
                     .map_err(err)?
@@ -306,7 +310,11 @@ pub(crate) fn suppressed(doc: &PdfDocument, page: usize) -> Result<Vec<TextRect>
         .as_indirect()
         .map_err(err)?;
     if let Some(list) = root(doc)?.get_dict("PDFreeSuppressedFields").map_err(err)? {
-        for i in 0..list.len().map_err(err)?.min(crate::constants::MAX_SUPPRESSED_FIELDS) {
+        for i in 0..list
+            .len()
+            .map_err(err)?
+            .min(crate::constants::MAX_SUPPRESSED_FIELDS)
+        {
             let item = list
                 .get_array(i as i32)
                 .map_err(err)?
@@ -385,7 +393,11 @@ pub(crate) fn page(doc: &PdfDocument, index: usize) -> Result<Vec<FormField>> {
         let value = if let Some(v) = f.get_dict_inheritable("V").map_err(err)? {
             if v.is_array().map_err(err)? {
                 let mut s = vec![];
-                for i in 0..v.len().map_err(err)?.min(crate::constants::MAX_SELECTION_VALUES) {
+                for i in 0..v
+                    .len()
+                    .map_err(err)?
+                    .min(crate::constants::MAX_SELECTION_VALUES)
+                {
                     s.push(
                         v.get_array(i as i32)
                             .map_err(err)?
@@ -455,7 +467,11 @@ pub(crate) fn page(doc: &PdfDocument, index: usize) -> Result<Vec<FormField>> {
             decimals: f
                 .get_dict("PDFreeDecimals")
                 .map_err(err)?
-                .map(|v| v.as_int().unwrap_or(crate::constants::DEFAULT_DECIMALS).clamp(0, crate::constants::MAX_DECIMALS) as u8)
+                .map(|v| {
+                    v.as_int()
+                        .unwrap_or(crate::constants::DEFAULT_DECIMALS)
+                        .clamp(0, crate::constants::MAX_DECIMALS) as u8
+                })
                 .unwrap_or(crate::constants::DEFAULT_DECIMALS),
         };
         let mut export_value = "Yes".to_string();
@@ -463,7 +479,11 @@ pub(crate) fn page(doc: &PdfDocument, index: usize) -> Result<Vec<FormField>> {
             && let Some(states) = ap.get_dict("N").map_err(err)?
             && states.is_dict().map_err(err)?
         {
-            for i in 0..states.dict_len().map_err(err)?.min(crate::constants::MAX_APPEARANCE_STATES) {
+            for i in 0..states
+                .dict_len()
+                .map_err(err)?
+                .min(crate::constants::MAX_APPEARANCE_STATES)
+            {
                 let k = states
                     .get_dict_key(i as i32)
                     .map_err(err)?
@@ -1398,7 +1418,11 @@ fn appearances(doc: &PdfDocument, id: FieldRef) -> Result<Vec<(Vec<u8>, Vec<u8>)
         return Ok(vec![(vec![], normal.read_stream().map_err(err)?)]);
     }
     let mut streams = vec![];
-    for i in 0..normal.dict_len().map_err(err)?.min(crate::constants::MAX_APPEARANCE_STATES) {
+    for i in 0..normal
+        .dict_len()
+        .map_err(err)?
+        .min(crate::constants::MAX_APPEARANCE_STATES)
+    {
         let key = normal
             .get_dict_key(i as i32)
             .map_err(err)?

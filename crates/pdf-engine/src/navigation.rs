@@ -14,7 +14,11 @@ impl Navigation {
         self.outlines = true;
     }
     pub fn request_links(&mut self, pages: Vec<usize>, count: usize) {
-        self.pages = pages.into_iter().filter(|p| *p < count).take(crate::constants::MAX_LINK_PAGES).collect();
+        self.pages = pages
+            .into_iter()
+            .filter(|p| *p < count)
+            .take(crate::constants::MAX_LINK_PAGES)
+            .collect();
     }
     pub fn tick(
         &mut self,

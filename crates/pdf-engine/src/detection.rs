@@ -140,7 +140,10 @@ fn snapshot(doc: &PdfDocument, page: usize, name_prefix: String) -> Result<PageI
     let native = doc.load_page(page as i32).map_err(err)?;
     let bounds = native.bounds().map_err(err)?;
     let scale = (crate::constants::OCR_SOURCE_DPI / crate::constants::PDF_STANDARD_DPI)
-        .min((crate::constants::DETECTION_MAX_PIXELS / (bounds.width() * bounds.height()) as f64).sqrt() as f32)
+        .min(
+            (crate::constants::DETECTION_MAX_PIXELS / (bounds.width() * bounds.height()) as f64)
+                .sqrt() as f32,
+        )
         .min(crate::constants::DETECTION_MAX_DIMENSION / bounds.width().max(bounds.height()));
     if !scale.is_finite() || scale < crate::constants::DETECTION_MIN_SCALE {
         return Err("Page dimensions exceed field-detection limits.".into());
@@ -200,13 +203,19 @@ fn snapshot(doc: &PdfDocument, page: usize, name_prefix: String) -> Result<PageI
         }
     }
     let mut circles = vec![];
-    for drawing in native.drawings().map_err(err)?.into_iter().take(crate::constants::MAX_DRAWINGS) {
+    for drawing in native
+        .drawings()
+        .map_err(err)?
+        .into_iter()
+        .take(crate::constants::MAX_DRAWINGS)
+    {
         if drawing
             .items
             .iter()
             .filter(|i| matches!(i, DrawingItem::Curve(..)))
             .count()
-            >= crate::constants::MIN_CURVE_COUNT {
+            >= crate::constants::MIN_CURVE_COUNT
+        {
             let r = drawing.rect;
             if r.width() >= crate::constants::CIRCLE_WIDTH_RANGE.0
                 && r.width() <= crate::constants::CIRCLE_WIDTH_RANGE.1
@@ -220,7 +229,11 @@ fn snapshot(doc: &PdfDocument, page: usize, name_prefix: String) -> Result<PageI
                 });
             }
         }
-        for item in drawing.items.into_iter().take(crate::constants::MAX_ITEMS_PER_DRAWING) {
+        for item in drawing
+            .items
+            .into_iter()
+            .take(crate::constants::MAX_ITEMS_PER_DRAWING)
+        {
             match item {
                 DrawingItem::Rect { rect, .. } => vectors.push(TextRect {
                     left: rect.x0 - bounds.x0,
@@ -228,7 +241,10 @@ fn snapshot(doc: &PdfDocument, page: usize, name_prefix: String) -> Result<PageI
                     right: rect.x1 - bounds.x0,
                     bottom: rect.y1 - bounds.y0,
                 }),
-                DrawingItem::Line(a, b) if (a.y - b.y).abs() < 1. && (a.x - b.x).abs() > crate::constants::MIN_LINE_LENGTH => {
+                DrawingItem::Line(a, b)
+                    if (a.y - b.y).abs() < 1.
+                        && (a.x - b.x).abs() > crate::constants::MIN_LINE_LENGTH =>
+                {
                     vectors.push(TextRect {
                         left: a.x.min(b.x) - bounds.x0,
                         top: a.y.min(b.y) - bounds.y0,
@@ -429,7 +445,9 @@ fn ocr(input: &PageInput, factor: u32, psm: &str, cancel: &AtomicBool) -> Result
     let mut child = cmd.spawn().map_err(err)?;
     let started = Instant::now();
     loop {
-        if cancel.load(Ordering::Acquire) || started.elapsed() > Duration::from_secs(crate::constants::OCR_TIMEOUT_SECS) {
+        if cancel.load(Ordering::Acquire)
+            || started.elapsed() > Duration::from_secs(crate::constants::OCR_TIMEOUT_SECS)
+        {
             let _ = child.kill();
             let _ = child.wait();
             return Err("OCR cancelled or exceeded its 30-second page limit.".into());
@@ -530,8 +548,10 @@ fn deskew(input: &mut PageInput, cancel: &AtomicBool) -> Result<f32> {
     let mut points = vec![];
     for y in (0..h).step_by(step) {
         for x in (0..w).step_by(step) {
-            let dark = (y..(y + step).min(h))
-                .any(|yy| (x..(x + step).min(w)).any(|xx| input.gray[yy * w + xx] < crate::constants::DARK_PIXEL_THRESHOLD));
+            let dark = (y..(y + step).min(h)).any(|yy| {
+                (x..(x + step).min(w))
+                    .any(|xx| input.gray[yy * w + xx] < crate::constants::DARK_PIXEL_THRESHOLD)
+            });
             if dark {
                 points.push((x as f32 / step as f32, y as f32 / step as f32));
             }
@@ -541,7 +561,9 @@ fn deskew(input: &mut PageInput, cancel: &AtomicBool) -> Result<f32> {
         return Ok(0.);
     }
     let mut best = (0_f32, 0_f64);
-    for degree in -crate::constants::DESKEW_ANGLE_MAX_DEGREES..=crate::constants::DESKEW_ANGLE_MAX_DEGREES {
+    for degree in
+        -crate::constants::DESKEW_ANGLE_MAX_DEGREES..=crate::constants::DESKEW_ANGLE_MAX_DEGREES
+    {
         let angle = (degree as f32 * crate::constants::DESKEW_ANGLE_STEP_DEGREES).to_radians();
         let (s, c) = angle.sin_cos();
         let mut rows = vec![0_u32; h / step + w / step + 256];
@@ -594,11 +616,19 @@ fn label(words: &[Word], r: TextRect, checkbox: bool) -> Option<(String, f32)> {
             let left = r.left - w.rect.right;
             let above = r.top - w.rect.bottom;
             let right = w.rect.left - r.right;
-            let distance = if checkbox && right >= -2. && right <= crate::constants::CHECKBOX_RIGHT_MAX && vertical < crate::constants::CHECKBOX_VERTICAL_TOLERANCE {
+            let distance = if checkbox
+                && right >= -2.
+                && right <= crate::constants::CHECKBOX_RIGHT_MAX
+                && vertical < crate::constants::CHECKBOX_VERTICAL_TOLERANCE
+            {
                 right + vertical * 2.
-            } else if left >= -3. && left <= crate::constants::CHECKBOX_LEFT_MAX && vertical < crate::constants::CHECKBOX_ABOVE_MAX {
+            } else if left >= -3.
+                && left <= crate::constants::CHECKBOX_LEFT_MAX
+                && vertical < crate::constants::CHECKBOX_ABOVE_MAX
+            {
                 left + vertical * 2.
-            } else if above >= -3. && above <= crate::constants::CHECKBOX_ABOVE_MAX_ALT
+            } else if above >= -3.
+                && above <= crate::constants::CHECKBOX_ABOVE_MAX_ALT
                 && w.rect.left < r.right
                 && w.rect.right > r.left - crate::constants::CHECKBOX_LEFT_MIN
             {
@@ -666,7 +696,8 @@ fn raster_shapes(input: &PageInput) -> Vec<Shape> {
         .enumerate()
         .map(|(i, n)| i as f64 * (*n as f64))
         .sum::<f64>();
-    let (mut weight, mut sum_bg, mut best, mut threshold) = (0_f64, 0_f64, 0_f64, crate::constants::THRESHOLD_BASE);
+    let (mut weight, mut sum_bg, mut best, mut threshold) =
+        (0_f64, 0_f64, 0_f64, crate::constants::THRESHOLD_BASE);
     for (i, count) in hist.iter().enumerate() {
         weight += *count as f64;
         if weight == 0. || weight == total {
@@ -678,7 +709,10 @@ fn raster_shapes(input: &PageInput) -> Vec<Shape> {
             * (sum_bg / weight - (sum - sum_bg) / (total - weight)).powi(2);
         if variance > best {
             best = variance;
-            threshold = (i + crate::constants::THRESHOLD_OFFSET).clamp(crate::constants::THRESHOLD_MIN as usize, crate::constants::THRESHOLD_MAX as usize) as u8;
+            threshold = (i + crate::constants::THRESHOLD_OFFSET).clamp(
+                crate::constants::THRESHOLD_MIN as usize,
+                crate::constants::THRESHOLD_MAX as usize,
+            ) as u8;
         }
     }
     let dark = |x: usize, y: usize| {
@@ -708,9 +742,14 @@ fn raster_shapes(input: &PageInput) -> Vec<Shape> {
                 x += 1;
             }
             if (end - start) as f32 / scale >= 5. {
-                if let Some(last) = runs.iter_mut().rev().take(crate::constants::MAX_RUNS_LOOKBACK).find(|(a, b, c)| {
-                    y - *c <= 3 && start.abs_diff(*a) <= 3 && end.abs_diff(*b) <= 3
-                }) {
+                if let Some(last) = runs
+                    .iter_mut()
+                    .rev()
+                    .take(crate::constants::MAX_RUNS_LOOKBACK)
+                    .find(|(a, b, c)| {
+                        y - *c <= 3 && start.abs_diff(*a) <= 3 && end.abs_diff(*b) <= 3
+                    })
+                {
                     last.2 = y;
                 } else {
                     runs.push((start, end, y));
@@ -727,7 +766,13 @@ fn raster_shapes(input: &PageInput) -> Vec<Shape> {
     for (i, (x1, x2, y)) in runs.iter().copied().enumerate() {
         let width = (x2 - x1) as f32 / scale;
         let mut closed = false;
-            for (j, (a, b, bottom)) in runs.iter().copied().enumerate().skip(i + 1).take(crate::constants::MAX_PAIR_LOOKAHEAD) {
+        for (j, (a, b, bottom)) in runs
+            .iter()
+            .copied()
+            .enumerate()
+            .skip(i + 1)
+            .take(crate::constants::MAX_PAIR_LOOKAHEAD)
+        {
             if bottom <= y {
                 continue;
             }
@@ -738,7 +783,9 @@ fn raster_shapes(input: &PageInput) -> Vec<Shape> {
             if height > crate::constants::MAX_SHAPE_HEIGHT {
                 break;
             }
-            if x1.abs_diff(a) > crate::constants::MAX_CORNER_DIFF || x2.abs_diff(b) > crate::constants::MAX_CORNER_DIFF {
+            if x1.abs_diff(a) > crate::constants::MAX_CORNER_DIFF
+                || x2.abs_diff(b) > crate::constants::MAX_CORNER_DIFF
+            {
                 continue;
             }
             let sides = (y..=bottom)
@@ -770,7 +817,11 @@ fn raster_shapes(input: &PageInput) -> Vec<Shape> {
                 break;
             }
         }
-        if !closed && !paired.contains(&i) && width >= crate::constants::SHAPE_WIDTH_RANGE.0 && width <= crate::constants::SHAPE_WIDTH_RANGE.1 {
+        if !closed
+            && !paired.contains(&i)
+            && width >= crate::constants::SHAPE_WIDTH_RANGE.0
+            && width <= crate::constants::SHAPE_WIDTH_RANGE.1
+        {
             shapes.push(Shape {
                 rect: TextRect {
                     left: x1 as f32 / scale,
@@ -834,7 +885,10 @@ fn raster_shapes(input: &PageInput) -> Vec<Shape> {
                 .iter()
                 .filter(|(xx, yy)| dark(*xx, *yy))
                 .count();
-            if corners == 0 && !dark((l + r) / 2, (t + b) / 2) && count * 100 / (cw * ch) < crate::constants::MIN_FILL_RATIO {
+            if corners == 0
+                && !dark((l + r) / 2, (t + b) / 2)
+                && count * 100 / (cw * ch) < crate::constants::MIN_FILL_RATIO
+            {
                 shapes.push(Shape {
                     rect: TextRect {
                         left: l as f32 / scale,
@@ -909,16 +963,13 @@ fn candidates(input: &PageInput, words: &[Word]) -> Vec<DetectedField> {
         if !check && !sized {
             continue;
         }
-        if input
-            .blocked
-            .iter()
-            .any(|b| overlap(r, *b) > crate::constants::BLOCKED_OVERLAP_THRESHOLD
-                || overlap(*b, r) > crate::constants::BLOCKED_OVERLAP_REVERSE_THRESHOLD)
-            || found
-                .iter()
-                .any(|f| overlap(r, f.spec.rect) > crate::constants::FOUND_OVERLAP_THRESHOLD
-                    || overlap(f.spec.rect, r) > crate::constants::FOUND_OVERLAP_THRESHOLD)
-        {
+        if input.blocked.iter().any(|b| {
+            overlap(r, *b) > crate::constants::BLOCKED_OVERLAP_THRESHOLD
+                || overlap(*b, r) > crate::constants::BLOCKED_OVERLAP_REVERSE_THRESHOLD
+        }) || found.iter().any(|f| {
+            overlap(r, f.spec.rect) > crate::constants::FOUND_OVERLAP_THRESHOLD
+                || overlap(f.spec.rect, r) > crate::constants::FOUND_OVERLAP_THRESHOLD
+        }) {
             continue;
         }
         if words.iter().any(|word| {
@@ -947,15 +998,17 @@ fn candidates(input: &PageInput, words: &[Word]) -> Vec<DetectedField> {
             .filter(|other| {
                 (other.left - r.left).abs() < crate::constants::GRID_TOLERANCE
                     && (other.right - r.right).abs() < crate::constants::GRID_TOLERANCE
-                    && (other.bottom - other.top - h).abs() < crate::constants::GRID_HEIGHT_TOLERANCE
+                    && (other.bottom - other.top - h).abs()
+                        < crate::constants::GRID_HEIGHT_TOLERANCE
                     && (other.top - r.top).abs() > crate::constants::GRID_TOLERANCE
                     && (other.top - r.top).abs() < crate::constants::GRID_TOP_RANGE.1
             })
             .collect::<Vec<_>>();
         let grid = same_rows.len() >= crate::constants::GRID_MIN_ROWS
-            && same_rows
-                .iter()
-                .any(|other| (other.top - r.top).abs() < h * crate::constants::GRID_HEIGHT_FACTOR + crate::constants::GRID_TOLERANCE);
+            && same_rows.iter().any(|other| {
+                (other.top - r.top).abs()
+                    < h * crate::constants::GRID_HEIGHT_FACTOR + crate::constants::GRID_TOLERANCE
+            });
         let useful_label = [
             "name",
             "address",
@@ -995,7 +1048,8 @@ fn candidates(input: &PageInput, words: &[Word]) -> Vec<DetectedField> {
         .iter()
         .any(|s| lower.contains(s));
         let direct_label = words.iter().any(|word| {
-            r.left - word.rect.right >= -3. && r.left - word.rect.right <= crate::constants::DIRECT_LABEL_LEFT_MAX
+            r.left - word.rect.right >= -3.
+                && r.left - word.rect.right <= crate::constants::DIRECT_LABEL_LEFT_MAX
                 && (word.rect.top - r.top).abs() < crate::constants::DIRECT_LABEL_VERTICAL_TOLERANCE
         });
         if !shape.blank
@@ -1017,9 +1071,11 @@ fn candidates(input: &PageInput, words: &[Word]) -> Vec<DetectedField> {
                         || ((header == "select" || header == "choose")
                             && words.iter().any(|next| {
                                 next.text.eq_ignore_ascii_case("one")
-                                    && (next.rect.top - word.rect.top).abs() < crate::constants::RADIO_GROUP_TOP_DIFF
+                                    && (next.rect.top - word.rect.top).abs()
+                                        < crate::constants::RADIO_GROUP_TOP_DIFF
                                     && next.rect.left >= word.rect.right
-                                    && next.rect.left - word.rect.right < crate::constants::RADIO_GROUP_LEFT_MAX
+                                    && next.rect.left - word.rect.right
+                                        < crate::constants::RADIO_GROUP_LEFT_MAX
                             })))
                         && word.rect.bottom <= r.top + crate::constants::RADIO_GROUP_TOP_DIFF
                         && r.top - word.rect.bottom < crate::constants::RADIO_GROUP_TOP_MAX
@@ -1062,7 +1118,8 @@ fn candidates(input: &PageInput, words: &[Word]) -> Vec<DetectedField> {
             FieldKind::Text
         };
         let mut score = if nearby.is_some() {
-            crate::constants::SCORE_WITH_LABEL + crate::constants::SCORE_OCR_WEIGHT * ocr_conf.max(0.)
+            crate::constants::SCORE_WITH_LABEL
+                + crate::constants::SCORE_OCR_WEIGHT * ocr_conf.max(0.)
         } else {
             crate::constants::SCORE_WITHOUT_LABEL
         };
@@ -1153,7 +1210,12 @@ fn recheck_crop(input: &PageInput, found: &[DetectedField]) -> (PageInput, (f32,
 fn recognize(mut input: PageInput, cancel: &AtomicBool) -> Result<Vec<DetectedField>> {
     let angle = deskew(&mut input, cancel)?;
     let words = if input.words.is_empty() {
-        ocr(&input, crate::constants::OCR_FACTOR_PRIMARY, crate::constants::OCR_PSM_PRIMARY, cancel)?
+        ocr(
+            &input,
+            crate::constants::OCR_FACTOR_PRIMARY,
+            crate::constants::OCR_PSM_PRIMARY,
+            cancel,
+        )?
     } else {
         input.words.clone()
     };

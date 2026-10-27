@@ -418,24 +418,46 @@ impl Engine {
         let _ = self.wake.try_send(());
     }
     pub fn form_pages(&self, document: u64, revision: u64, pages: Vec<usize>) {
-        self.shared.desired.lock().unwrap().forms =
-            Some((document, revision, pages.into_iter().take(crate::constants::MAX_FORM_PAGES).collect()));
+        self.shared.desired.lock().unwrap().forms = Some((
+            document,
+            revision,
+            pages
+                .into_iter()
+                .take(crate::constants::MAX_FORM_PAGES)
+                .collect(),
+        ));
         let _ = self.wake.try_send(());
     }
     pub fn links_pages(&self, document: u64, revision: u64, pages: Vec<usize>) {
-        self.shared.desired.lock().unwrap().links =
-            Some((document, revision, pages.into_iter().take(crate::constants::MAX_LINK_PAGES).collect()));
+        self.shared.desired.lock().unwrap().links = Some((
+            document,
+            revision,
+            pages
+                .into_iter()
+                .take(crate::constants::MAX_LINK_PAGES)
+                .collect(),
+        ));
         let _ = self.wake.try_send(());
     }
     pub fn text_pages(&self, document: u64, pages: Vec<usize>) {
-        self.shared.desired.lock().unwrap().text =
-            Some((document, pages.into_iter().take(crate::constants::MAX_TEXT_PAGES).collect()));
+        self.shared.desired.lock().unwrap().text = Some((
+            document,
+            pages
+                .into_iter()
+                .take(crate::constants::MAX_TEXT_PAGES)
+                .collect(),
+        ));
         let _ = self.wake.try_send(());
     }
 
     pub fn note_pages(&self, document: u64, pages: Vec<usize>) {
-        self.shared.desired.lock().unwrap().notes =
-            Some((document, pages.into_iter().take(crate::constants::MAX_NOTES_PAGES).collect()));
+        self.shared.desired.lock().unwrap().notes = Some((
+            document,
+            pages
+                .into_iter()
+                .take(crate::constants::MAX_NOTES_PAGES)
+                .collect(),
+        ));
         let _ = self.wake.try_send(());
     }
     fn file(&self, command: FileCommand) -> bool {
@@ -616,8 +638,13 @@ impl Engine {
     }
 
     pub fn thumbnails(&self, document: u64, pages: Vec<usize>) {
-        self.shared.desired.lock().unwrap().thumbnails =
-            Some((document, pages.into_iter().take(crate::constants::MAX_THUMBNAIL_PAGES).collect()));
+        self.shared.desired.lock().unwrap().thumbnails = Some((
+            document,
+            pages
+                .into_iter()
+                .take(crate::constants::MAX_THUMBNAIL_PAGES)
+                .collect(),
+        ));
         let _ = self.wake.try_send(());
     }
 

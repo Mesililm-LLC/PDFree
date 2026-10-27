@@ -1,9 +1,16 @@
-use crate::{constants, EngineError};
 use crate::backend::DisplayListBackend;
+use crate::{EngineError, constants};
 use viewer_core::{PixelTile, TileKey};
 
-pub(crate) fn render(list: &dyn DisplayListBackend, key: TileKey) -> Result<PixelTile, EngineError> {
-    if key.width == 0 || key.height == 0 || key.width > constants::MAX_TILE_DIMENSION || key.height > constants::MAX_TILE_DIMENSION || key.rotation != 0
+pub(crate) fn render(
+    list: &dyn DisplayListBackend,
+    key: TileKey,
+) -> Result<PixelTile, EngineError> {
+    if key.width == 0
+        || key.height == 0
+        || key.width > constants::MAX_TILE_DIMENSION
+        || key.height > constants::MAX_TILE_DIMENSION
+        || key.rotation != 0
     {
         return Err(EngineError::Render(
             "Invalid tile dimensions or rotation".into(),

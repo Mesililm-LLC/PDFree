@@ -75,9 +75,9 @@ impl RenderManager {
         let visible = layout.visible_pages(view);
         let first = *visible.start();
         let last = *visible.end();
-        let resident: Vec<usize> =
-            (first.saturating_sub(2)..=(last + 2).min(layout.pages.len().saturating_sub(1)))
-                .collect();
+        let resident: Vec<usize> = (first.saturating_sub(2)
+            ..=(last + 2).min(layout.pages.len().saturating_sub(1)))
+            .collect();
         let active: Vec<usize> = resident
             .iter()
             .copied()
@@ -115,8 +115,11 @@ impl RenderManager {
             if let Some(pixels) = self.cache.get(request) {
                 if request.priority < 1000 {
                     self.images.entry(*request).or_insert_with(|| {
-                        let buffer =
-                            SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(&pixels.rgba, pixels.width, pixels.height);
+                        let buffer = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(
+                            &pixels.rgba,
+                            pixels.width,
+                            pixels.height,
+                        );
                         slint::Image::from_rgba8(buffer)
                     });
                 }

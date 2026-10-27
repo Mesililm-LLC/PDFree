@@ -38,6 +38,9 @@ jobs:
         pip install cmake ninja
         Write-Host "Build dependencies installed"
 
+    - name: Bootstrap native build prerequisites
+      run: ./scripts/bootstrap.ps1
+
     - name: Check that libclang exists
       run: |
         if (!(Test-Path -LiteralPath "$env:LIBCLANG_PATH\libclang.dll")) {

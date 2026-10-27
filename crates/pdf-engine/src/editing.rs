@@ -85,7 +85,7 @@ pub(crate) fn restore(bytes: &[u8], password: Option<&str>) -> Result<PdfDocumen
 }
 pub(crate) fn info(doc: &PdfDocument) -> Result<DocumentInfo, String> {
     let pages = doc.page_count().map_err(error)?;
-        if !(1..=crate::constants::MAX_EDIT_PAGES).contains(&pages) {
+    if !(1..=crate::constants::MAX_EDIT_PAGES).contains(&pages) {
         return Err("Editing supports 1–100,000 pages".into());
     }
     let bounds = doc.load_page(0).and_then(|p| p.bounds()).map_err(error)?;
@@ -140,7 +140,10 @@ pub(crate) fn annotations(
     let mut bytes = 0;
     let mut truncated = false;
     for (ordinal, a) in native.annotations().enumerate() {
-        if ordinal >= crate::constants::MAX_ANNOTATIONS_PER_PAGE || result.len() >= crate::constants::MAX_ANNOTATIONS_RETURNED || bytes >= crate::constants::MAX_ANNOTATION_BYTES {
+        if ordinal >= crate::constants::MAX_ANNOTATIONS_PER_PAGE
+            || result.len() >= crate::constants::MAX_ANNOTATIONS_RETURNED
+            || bytes >= crate::constants::MAX_ANNOTATION_BYTES
+        {
             truncated = true;
             break;
         }
@@ -149,7 +152,10 @@ pub(crate) fn annotations(
             PdfAnnotationType::Text => {
                 let r = a.rect().map_err(error)?;
                 let text = a.contents().map_err(error)?.unwrap_or("");
-                let mut end = text.len().min(crate::constants::MAX_TEXT_LENGTH).min(crate::constants::MAX_ANNOTATION_BYTES - bytes);
+                let mut end = text
+                    .len()
+                    .min(crate::constants::MAX_TEXT_LENGTH)
+                    .min(crate::constants::MAX_ANNOTATION_BYTES - bytes);
                 while !text.is_char_boundary(end) {
                     end -= 1;
                 }
@@ -256,7 +262,10 @@ pub(crate) fn mutate(doc: &mut PdfDocument, command: &EditCommand) -> Result<usi
             ordinal,
             text,
         } => {
-            if text.trim().is_empty() || text.len() > crate::constants::MAX_TEXT_LENGTH || text.contains('\0') {
+            if text.trim().is_empty()
+                || text.len() > crate::constants::MAX_TEXT_LENGTH
+                || text.contains('\0')
+            {
                 return Err("Notes need 1–16,384 UTF-8 bytes of text".into());
             }
             let native = doc.load_pdf_page(*page as i32).map_err(error)?;
@@ -480,7 +489,9 @@ impl ImportGraph<'_> {
         Ok(dest)
     }
     fn copy(&mut self, value: &PdfObject, depth: usize) -> Result<PdfObject, String> {
-        if depth > crate::constants::MAX_IMPORT_DEPTH || self.nodes >= crate::constants::MAX_IMPORT_NODES {
+        if depth > crate::constants::MAX_IMPORT_DEPTH
+            || self.nodes >= crate::constants::MAX_IMPORT_NODES
+        {
             return Err("Imported interactive objects exceed complexity limits".into());
         }
         self.nodes += 1;
@@ -510,7 +521,9 @@ impl ImportGraph<'_> {
                 }
                 let bytes = value.read_raw_stream().map_err(error)?;
                 self.stream_bytes = self.stream_bytes.saturating_add(bytes.len());
-                if bytes.len() > crate::constants::MAX_STREAM_BYTES || self.stream_bytes > crate::constants::MAX_TOTAL_STREAM_BYTES {
+                if bytes.len() > crate::constants::MAX_STREAM_BYTES
+                    || self.stream_bytes > crate::constants::MAX_TOTAL_STREAM_BYTES
+                {
                     return Err("Imported stream exceeds 64 MiB limit".into());
                 }
                 reserved
@@ -691,7 +704,10 @@ fn named_destinations(source: &PdfDocument) -> Result<HashMap<String, PdfObject>
     let mut nodes = 0;
     while let Some((node, depth)) = pending.pop() {
         nodes += 1;
-        if nodes > 10000 || depth > crate::constants::MAX_IMPORT_DEPTH || result.len() > crate::constants::MAX_EDIT_PAGES {
+        if nodes > 10000
+            || depth > crate::constants::MAX_IMPORT_DEPTH
+            || result.len() > crate::constants::MAX_EDIT_PAGES
+        {
             return Err("Destination name tree exceeds limits".into());
         }
         if let Some(names) = node.get_dict("Names").map_err(error)? {
