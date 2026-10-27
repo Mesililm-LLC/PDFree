@@ -97,6 +97,7 @@ pub enum FileAction {
     Save,
     Extract,
     Split,
+    Print,
 }
 struct FileCommand {
     document: u64,
@@ -123,6 +124,10 @@ enum FileCommandAction {
         revision: u64,
         target: PathBuf,
         pages: Vec<usize>,
+    },
+    PrintCopy {
+        revision: u64,
+        target: PathBuf,
     },
     Split {
         revision: u64,
@@ -573,6 +578,22 @@ impl Engine {
                 target,
                 pages,
             },
+        })
+    }
+    /// Write a full copy of the current (edited) document for OS printing.
+    /// Completion arrives as `Event::FileDone` with `FileAction::Print`;
+    /// the open document itself is not switched or marked saved.
+    pub fn print_copy(
+        &self,
+        document: u64,
+        revision: u64,
+        operation: u64,
+        target: PathBuf,
+    ) -> bool {
+        self.file(FileCommand {
+            document,
+            operation,
+            action: FileCommandAction::PrintCopy { revision, target },
         })
     }
     pub fn split(

@@ -93,6 +93,7 @@ impl State {
         ui.set_tiles(ModelRc::default());
         ui.set_previews(ModelRc::default());
         ui.set_pages(ModelRc::default());
+        ui.set_page_numbers(ModelRc::default());
         ui.set_ready(false);
         ui.set_loading(true);
         ui.set_page_count(0);
@@ -254,6 +255,15 @@ impl State {
                 }
                 return;
             }
+            "select-all" => {
+                if ui.get_ready() && !self.sizes.is_empty() {
+                    let page = self.current_page.min(self.sizes.len() - 1);
+                    let rect = self.layout.pages[page];
+                    self.select_text(ui, page, 0.0, 0.0, 0);
+                    self.select_text(ui, page, rect.width, rect.height, 2);
+                }
+                return;
+            }
             "search-close" => {
                 ui.set_search_visible(false);
                 ui.set_search_query("".into());
@@ -278,16 +288,10 @@ impl State {
             return;
         }
         let current = self.viewport.layout.page_at(-ui.get_scroll_y() + 30.0);
-        let size = self.viewport.sizes[current];
-        let pair = if self.viewport.mode == ReadingMode::Facing {
-            self.viewport.sizes.get(current + 1).copied()
-        } else {
-            None
-        };
-        let fit_width = size.width + pair.map_or(0., |s| s.width);
-        let fit_height = size.height.max(pair.map_or(0., |s| s.height));
-        let fit_space = if pair.is_some() { 78. } else { 62. };
         if let Some(new_zoom) = self.viewport.compute_zoom(ui, action) {
+            if action == "fit-page" || action == "fit-width" {
+                ui.set_fit_page(action == "fit-page");
+            }
             let old_zoom = self.viewport.zoom;
             let old_y = self.viewport.layout.pages[current].y;
             let offset = (-ui.get_scroll_y() - old_y).max(0.0);
@@ -330,6 +334,9 @@ impl State {
                     self.engine.outlines(self.document.document, self.editor.revision);
                     self.viewport.sizes = vec![info.first_page; info.pages];
                     ui.set_page_count(info.pages as i32);
+                    ui.set_page_numbers(ModelRc::new(VecModel::from(
+                        (1..=info.pages as i32).collect::<Vec<i32>>(),
+                    )));
                     ui.set_loading(false);
                     ui.set_ready(true);
                     ui.set_can_copy(info.can_copy);
@@ -463,10 +470,8 @@ impl State {
             zoom: self.viewport.zoom,
             dpi: ui.window().scale_factor(),
         };
-        let refresh_needed = self
-            .viewport
-            .refresh_layout(ui, &view);
-        if refresh_needed {
+        let refresh_needed = self.viewport.refresh_layout(ui, &view);
+        if refresh_needed || changed {
             self.viewport.trace_event("viewport_changed", serde_json::json!({"generation":self.viewport.generation,"scroll_y":view.scroll_y,"zoom":self.viewport.zoom}));
             self.refresh(ui, view);
         }

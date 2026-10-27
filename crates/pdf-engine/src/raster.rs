@@ -9,15 +9,13 @@ pub(crate) fn render(list: &dyn DisplayListBackend, key: TileKey) -> Result<Pixe
             "Invalid tile dimensions or rotation".into(),
         ));
     }
-    let bounds = list.bounds().map_err(|e| EngineError::Render(e))?;
-    let scale = key.scale_milli as f32 / constants::SCALE_MILLI_FACTOR;
     let result = list.render(
         key.width,
         key.height,
         key.rotation,
         key.scale_milli,
-        bounds.0,
-        bounds.1,
+        key.x as f32,
+        key.y as f32,
     )?;
     Ok(PixelTile {
         width: key.width,

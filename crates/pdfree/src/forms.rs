@@ -17,7 +17,8 @@ pub(crate) struct Forms {
     review_only: bool,
     counter: u64,
     pending_action: Option<String>,
-    navigation: Option<(bool, usize, usize)>,
+    // (previous, page, pages remaining, review-only)
+    navigation: Option<(bool, usize, usize, bool)>,
     blur: i32,
     close_after_commit: bool,
     open_after_commit: Option<std::path::PathBuf>,
@@ -25,6 +26,11 @@ pub(crate) struct Forms {
     signature_strokes: Vec<Vec<[f32; 2]>>,
     signature_image: Option<Vec<u8>>,
     signature_pending: bool,
+    // Page to auto-detect once its field records arrive after opening Form.
+    auto_detect_page: Option<usize>,
+    // Last overlay model sent to the UI; replacing an identical model would
+    // recreate the focused inline editor and drop keyboard focus.
+    last_surfaces: std::cell::RefCell<Vec<FormSurface>>,
     certificate: Option<std::path::PathBuf>,
     signed_target: Option<std::path::PathBuf>,
 }
@@ -73,6 +79,15 @@ impl State {
         }
         if ui.get_file_busy() {
             return true;
+        }
+        // Dates typed in a common variant format are corrected to the
+        // field's format as the field loses focus.
+        if f.spec.kind == FieldKind::Date
+            && let Some(normalized) =
+                viewer_core::normalize_date(ui.get_form_value().as_str(), &f.spec.date_format)
+            && normalized != ui.get_form_value().as_str()
+        {
+            ui.set_form_value(normalized.into());
         }
         let value = FormValue::Text(ui.get_form_value().to_string());
         if let Err(e) = f.spec.validate_value(&value) {
@@ -275,10 +290,19 @@ impl State {
                 }
                 self.forms.review_only = false;
                 self.forms.navigation = None;
-                ui.set_form_mode(if action == "form-prepare" { 2 } else { 1 });
+                // One form mode: filling and authoring share mode 1. The
+                // legacy "form-prepare" entry only arms field drawing.
+                let opening = ui.get_form_mode() == 0;
+                ui.set_form_mode(1);
                 ui.set_form_draw(action == "form-prepare");
+                if opening && action == "form-fill" && !self.sizes.is_empty() {
+                    self.forms.auto_detect_page = Some(self.current_page.min(self.sizes.len() - 1));
+                }
                 self.forms.wanted.clear();
-                self.form_error(ui,"Click a field to edit it. In Prepare Form, drag on the page to create a field.");
+                self.form_error(
+                    ui,
+                    "Click a field on the page to type in it, or use Field tools to add fields.",
+                );
             }
             "form-close" => {
                 if self.form_commit(ui) {
@@ -286,8 +310,10 @@ impl State {
                         self.forms.pending_action = Some(action.into());
                     }
                 } else {
+                    self.forms.auto_detect_page = None;
                     ui.set_form_mode(0);
                     ui.set_form_draw(false);
+                    self.forms.last_surfaces.borrow_mut().clear();
                     ui.set_form_surfaces(ModelRc::default());
                 }
             }
@@ -369,16 +395,21 @@ impl State {
                 }
                 if action == "form-review" {
                     if let Some(page) = self.forms.review_pages.front().copied() {
-                        self.forms.navigation = Some((false, page, self.forms.review_pages.len()));
+                        self.forms.navigation =
+                            Some((false, page, self.forms.review_pages.len(), true));
                     }
-                    self.form_navigate(ui, false, true);
+                    self.form_navigate(ui, false, true, true);
                 } else {
-                    self.form_navigate(ui, action == "form-previous", false);
+                    // Ordinary Tab/Previous/Next always walks every field
+                    // in reading order; it also exits the review queue.
+                    self.forms.review_only = false;
+                    self.form_navigate(ui, action == "form-previous", false, false);
                 }
             }
 
             "form-enter-next" | "form-enter-previous" => {
-                self.form_navigate(ui, action == "form-enter-previous", true);
+                let review = self.forms.navigation.is_some_and(|(.., r)| r);
+                self.form_navigate(ui, action == "form-enter-previous", true, review);
             }
 
             "form-properties" => {
@@ -455,6 +486,10 @@ impl State {
             }
             return;
         }
+        if self.forms.selected != Some(f.id) {
+            self.forms.drag = None;
+            ui.set_form_draft_visible(false);
+        }
         self.forms.selected = Some(f.id);
         ui.set_form_password(f.password);
         ui.set_form_selected(true);
@@ -524,19 +559,51 @@ impl State {
             ui.set_form_focus(ui.get_form_focus().wrapping_add(1));
         }
     }
-    fn form_navigate(&mut self, ui: &AppWindow, previous: bool, entering: bool) {
+    fn form_navigate(&mut self, ui: &AppWindow, previous: bool, entering: bool, review: bool) {
         let page = self.forms.navigation.map_or_else(
             || self.forms.selected.map_or(self.current_page, |id| id.page),
-            |(_, p, _)| p,
+            |(_, p, _, _)| p,
         );
-        let eligible = self
+        let mut on_page = self
             .forms
             .records
             .values()
             .flatten()
             .enumerate()
-            .filter(|(_, f)| f.spec.page == page && (!self.forms.review_only || f.spec.review))
-            .map(|(i, f)| (i, f.id))
+            .filter(|(_, f)| f.spec.page == page && (!review || f.spec.review))
+            .map(|(i, f)| (i, f.id, f.spec.rect))
+            .collect::<Vec<_>>();
+        // Reading order: rows top-to-bottom, fields left-to-right within a
+        // row, regardless of widget or review ordering in the document.
+        on_page.sort_by(|a, b| {
+            a.2.top
+                .total_cmp(&b.2.top)
+                .then(a.2.left.total_cmp(&b.2.left))
+        });
+        let mut rows: Vec<Vec<(usize, viewer_core::FieldRef, TextRect)>> = Vec::new();
+        for item in on_page {
+            let same_row = rows.last().is_some_and(|row: &Vec<_>| {
+                let anchor = row[0].2;
+                let overlap = anchor.bottom.min(item.2.bottom) - anchor.top.max(item.2.top);
+                let shortest = (anchor.bottom - anchor.top).min(item.2.bottom - item.2.top);
+                shortest > 0. && overlap > 0.5 * shortest
+            });
+            if same_row {
+                rows.last_mut().unwrap().push(item);
+            } else {
+                rows.push(vec![item]);
+            }
+        }
+        let eligible = rows
+            .into_iter()
+            .flat_map(|mut row| {
+                row.sort_by(|a, b| {
+                    a.2.left
+                        .total_cmp(&b.2.left)
+                        .then(a.2.top.total_cmp(&b.2.top))
+                });
+                row.into_iter().map(|(i, id, _)| (i, id))
+            })
             .collect::<Vec<_>>();
         let position = if entering {
             None
@@ -559,17 +626,17 @@ impl State {
             self.form_select(ui, *index as i32);
             return;
         }
-        let pages = if self.forms.review_only {
+        let pages = if review {
             self.forms.review_pages.iter().copied().collect::<Vec<_>>()
         } else {
             (0..ui.get_page_count().max(0) as usize).collect()
         };
-        let remaining = self.forms.navigation.map_or(pages.len(), |(_, _, n)| n);
+        let remaining = self.forms.navigation.map_or(pages.len(), |(_, _, n, _)| n);
         if pages.is_empty() || remaining == 0 {
             self.forms.navigation = None;
             self.form_error(
                 ui,
-                if self.forms.review_only {
+                if review {
                     "No more uncertain fields."
                 } else {
                     "No form fields found."
@@ -583,14 +650,14 @@ impl State {
         } else {
             (index + 1) % pages.len()
         }];
-        self.forms.navigation = Some((previous, next, remaining - 1));
+        self.forms.navigation = Some((previous, next, remaining - 1, review));
         let action = if previous {
             "form-enter-previous"
         } else {
             "form-enter-next"
         };
         if self.forms.records.contains_key(&next) {
-            self.form_navigate(ui, previous, true);
+            self.form_navigate(ui, previous, true, review);
         } else {
             self.navigate(ui, next);
             self.forms.wanted.clear();
@@ -808,7 +875,7 @@ impl State {
         ui.set_signature_preview(slint::Image::from_rgba8(pixels));
     }
     pub(super) fn form_pointer(&mut self, ui: &AppWindow, x: f32, y: f32, phase: i32) {
-        if ui.get_form_mode() != 2 || !ui.get_form_draw() || ui.get_file_busy() {
+        if ui.get_form_mode() == 0 || !ui.get_form_draw() || ui.get_file_busy() {
             return;
         }
         if phase == 3 {
@@ -876,19 +943,78 @@ impl State {
         phase: i32,
         resize: bool,
     ) {
-        if ui.get_form_mode() != 2 || ui.get_file_busy() {
-            if phase == 0 {
+        if ui.get_form_mode() == 0 || ui.get_file_busy() {
+            if phase == 0 && ui.get_form_mode() > 0 {
                 self.form_select(ui, index);
             }
             return;
         }
         if phase == 0 {
+            // Resolve the clicked field first so a deferred selection
+            // (previous draft still committing) can never toggle it.
+            let target = self
+                .forms
+                .records
+                .values()
+                .flatten()
+                .nth(index as usize)
+                .cloned();
+            // A click that selects a field must never also drag it: only a
+            // field that was already selected can be moved by this press.
+            let was_selected = target
+                .as_ref()
+                .is_some_and(|f| self.forms.selected == Some(f.id));
             self.form_select(ui, index);
-            if let Some(f) = self.selected_form()
+            // Clicking a checkbox or radio on the page toggles it directly.
+            if !ui.get_file_busy()
+                && let Some(f) = &target
+                && self.forms.selected == Some(f.id)
+                && f.editable
+                && matches!(f.spec.kind, FieldKind::Checkbox | FieldKind::Radio)
+            {
+                let checked = f.value.text() == f.export_value;
+                let text = if f.spec.kind == FieldKind::Checkbox && checked {
+                    "Off".to_string()
+                } else {
+                    f.export_value.clone()
+                };
+                ui.set_form_checked(text != "Off");
+                self.forms.pending = Some((f.spec.page, f.spec.name.clone(), Some(f.id.widget)));
+                self.form_submit(
+                    ui,
+                    FormEdit::SetValue {
+                        id: f.id,
+                        value: FormValue::Text(text),
+                    },
+                );
+                return;
+            }
+            if was_selected
+                && let Some(f) = self.selected_form()
                 && f.authorable
+                && target.as_ref().is_some_and(|t| t.id == f.id)
             {
                 self.forms.drag = Some((f, x, y, resize));
             }
+        }
+        // A drag belongs to one field; events naming another field (or a
+        // cancellation) end it without moving anything.
+        if matches!(phase, 1..=3)
+            && let Some((f, ..)) = &self.forms.drag
+            && self
+                .forms
+                .records
+                .values()
+                .flatten()
+                .nth(index as usize)
+                .is_none_or(|t| t.id != f.id)
+        {
+            self.forms.drag = None;
+            ui.set_form_draft_visible(false);
+            return;
+        }
+        if phase == 3 {
+            self.forms.drag = None;
         }
         if phase == 1
             && let Some((f, sx, sy, resize)) = &self.forms.drag
@@ -972,10 +1098,14 @@ impl State {
                 self.forms.review_pages = review_pages.iter().copied().collect();
                 self.form_error(
                     ui,
-                    format!(
-                        "Created {count} fields. {} page(s) need review.",
-                        review_pages.len()
-                    ),
+                    if review_pages.is_empty() && *count > 0 {
+                        format!("Created {count} fields. Click a field on the page to type in it.")
+                    } else {
+                        format!(
+                            "Created {count} fields. {} page(s) need review.",
+                            review_pages.len()
+                        )
+                    },
                 );
                 if let Some(page) = review_pages.first() {
                     self.forms.review_only = true;
@@ -1000,6 +1130,7 @@ impl State {
                 self.forms.wanted.clear();
                 self.forms.selected = None;
                 ui.set_form_selected(false);
+                self.forms.last_surfaces.borrow_mut().clear();
                 ui.set_form_surfaces(ModelRc::default());
                 true
             }
@@ -1013,6 +1144,19 @@ impl State {
                 && self.forms.wanted.contains(page) =>
             {
                 self.forms.records.insert(*page, fields.clone());
+                // Opening Form on a page with no fields starts detection for
+                // that page once its (empty) field list is known.
+                if self.forms.auto_detect_page == Some(*page) {
+                    self.forms.auto_detect_page = None;
+                    if fields.is_empty()
+                        && ui.get_form_mode() > 0
+                        && !ui.get_file_busy()
+                        && ui.get_can_copy()
+                        && ui.get_can_edit_forms()
+                    {
+                        self.start_detection_pages(ui, vec![*page]);
+                    }
+                }
                 if let Some((p, name, widget)) = &self.forms.pending
                     && let Some(index) = self.forms.records.values().flatten().position(|f| {
                         f.spec.page == *p
@@ -1047,7 +1191,7 @@ impl State {
                 {
                     self.request_open(ui, path);
                 }
-                let navigation_ready = self.forms.navigation.is_none_or(|(_, p, _)| p == *page);
+                let navigation_ready = self.forms.navigation.is_none_or(|(_, p, _, _)| p == *page);
                 let review_ready = self.forms.pending_action.as_deref() != Some("form-review")
                     || self.forms.review_pages.front().is_none_or(|p| *p == *page);
                 if self.forms.pending.is_none()
@@ -1123,23 +1267,24 @@ impl State {
                     label: f.spec.label.as_str().into(),
                     selected: Some(f.id) == self.forms.selected,
                     review: f.spec.review,
+                    kind: FieldKind::ALL
+                        .iter()
+                        .position(|k| *k == f.spec.kind)
+                        .unwrap_or(0) as i32,
+                    value: f.value.text().into(),
+                    checked: f.value.text() == f.export_value,
+                    editable: f.editable,
+                    password: f.password,
                 })
             })
             .collect::<Vec<_>>();
+        if *self.forms.last_surfaces.borrow() == surfaces {
+            return;
+        }
+        *self.forms.last_surfaces.borrow_mut() = surfaces.clone();
         ui.set_form_surfaces(ModelRc::new(VecModel::from(surfaces)));
     }
     fn start_form_detection(&mut self, ui: &AppWindow) {
-        if !ui.get_can_copy() || !ui.get_can_edit_forms() {
-            self.form_error(
-                ui,
-                "This PDF does not permit recognition and creation of fields.",
-            );
-            return;
-        }
-        if self.form_commit(ui) {
-            self.forms.pending_action = Some("form-detect".into());
-            return;
-        }
         let count = self.sizes.len();
         let pages = match ui.get_form_scan_scope() {
             0 => Ok(vec![self.current_page.min(count.saturating_sub(1))]),
@@ -1157,6 +1302,23 @@ impl State {
                 return;
             }
         };
+        self.start_detection_pages(ui, pages);
+    }
+    fn start_detection_pages(&mut self, ui: &AppWindow, pages: Vec<usize>) {
+        if pages.is_empty() || pages.len() > 100 {
+            return;
+        }
+        if !ui.get_can_copy() || !ui.get_can_edit_forms() {
+            self.form_error(
+                ui,
+                "This PDF does not permit recognition and creation of fields.",
+            );
+            return;
+        }
+        if self.form_commit(ui) {
+            self.forms.pending_action = Some("form-detect".into());
+            return;
+        }
         self.editor.operation += 1;
         let accepted = self.engine.detect_fields(
             self.document,

@@ -484,6 +484,20 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                             .map(|p| (p, FileAction::Extract))
                         }
                     }
+                    FileCommandAction::PrintCopy { revision, target } => {
+                        if revision != journal.as_ref().map_or(0, |h| h.revision()) {
+                            Err("Document revision changed".into())
+                        } else {
+                            crate::editing::print_copy(
+                                doc,
+                                &source_path,
+                                session_password.as_deref(),
+                                &target,
+                                || shared.current_document(command.document),
+                            )
+                            .map(|p| (p, FileAction::Print))
+                        }
+                    }
                     FileCommandAction::Split {
                         revision,
                         directory,

@@ -17,6 +17,18 @@ def pdf(name, count, kind="text"):
     add("")
     font = add("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
     image = None
+    if kind == "flat-form":
+        # Line-art squares inside an embedded image (like a state seal):
+        # detection must not turn artwork into fields.
+        pixels = bytearray([245] * (80 * 80))
+        for (ox, oy) in [(6, 6), (30, 6), (54, 6), (6, 30), (30, 30), (54, 30), (18, 54), (42, 54)]:
+            for i in range(14):
+                pixels[oy * 80 + ox + i] = 25
+                pixels[(oy + 13) * 80 + ox + i] = 25
+                pixels[(oy + i) * 80 + ox] = 25
+                pixels[(oy + i) * 80 + ox + 13] = 25
+        packed = zlib.compress(bytes(pixels))
+        image = add(f"<< /Type /XObject /Subtype /Image /Width 80 /Height 80 /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode /Length {len(packed)} >>\nstream\n".encode() + packed + b"\nendstream")
     if kind == "scan":
         # Rasterized stripes and glyph-like blocks exercise image decoding.
         data = bytes(25 if (y % 40 < 8 and 30 < x < 560) else 245 for y in range(800) for x in range(600))
@@ -26,12 +38,27 @@ def pdf(name, count, kind="text"):
     for i in range(count):
         w, h = ((792, 612) if i % 2 and kind == "mixed" else (612, 792))
         content = f"BT /F1 24 Tf 50 {h - 70} Td (PDFree fixture - page {i+1}) Tj ET\n"
+        if kind == "flat-form":
+            # Print-to-PDF style form: underscore blanks are text, checkboxes are stroked squares.
+            lines = [
+                (680, "Date: ____________________    Taken by: ____________________"),
+                (650, "Customer Name: ______________________________  DOB: ____________"),
+                (620, "Address: ____________________  City: ____________  Zip Code: ________"),
+                (590, "Phone #: ____________________  Email address: ____________________"),
+                (520, "Comments: ______________________________________________________"),
+                (495, "_______________________________________________________________"),
+            ]
+            content = "".join(f"BT /F1 11 Tf 50 {y} Td ({text}) Tj ET\n" for y, text in lines)
+            content += "BT /F1 11 Tf 50 560 Td (Gender: M) Tj ET\n"
+            content += "118 558 9 9 re S\n"
+            content += "BT /F1 11 Tf 132 560 Td (F) Tj ET\n"
+            content += "146 558 9 9 re S\n"
         if kind == "vector":
             content += "0.1 0.4 0.8 RG\n" + "".join(f"{j % 580} {j % 720} m {(j*7)%600} {(j*11)%750} l S\n" for j in range(12000))
         if kind == "transparency":
             content += "q /GS1 gs 0.2 0.5 0.9 rg 70 300 300 300 re f 0.9 0.3 0.2 rg 200 200 300 300 re f Q\n"
         if image:
-            content += "q 512 0 0 650 50 40 cm /Im1 Do Q\n"
+            content += "q 80 0 0 80 470 700 cm /Im1 Do Q\n" if kind == "flat-form" else "q 512 0 0 650 50 40 cm /Im1 Do Q\n"
         stream = add(f"<< /Length {len(content)} >>\nstream\n{content}endstream")
         resources = f"/Font << /F1 {font} 0 R >>"
         if image: resources += f" /XObject << /Im1 {image} 0 R >>"
@@ -49,13 +76,13 @@ def pdf(name, count, kind="text"):
     result += f"trailer\n<< /Size {len(offsets)} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode()
     (OUT / name).write_bytes(result)
 
-for name, count, kind in [("text.pdf", 1, "text"), ("office.pdf", 20, "text"), ("mixed.pdf", 100, "mixed"), ("thousand.pdf", 1000, "text"), ("scan.pdf", 200, "scan"), ("vector.pdf", 1, "vector"), ("transparency.pdf", 1, "transparency")]:
+for name, count, kind in [("text.pdf", 1, "text"), ("office.pdf", 20, "text"), ("mixed.pdf", 100, "mixed"), ("thousand.pdf", 1000, "text"), ("scan.pdf", 200, "scan"), ("vector.pdf", 1, "vector"), ("transparency.pdf", 1, "transparency"), ("flat-form.pdf", 1, "flat-form")]:
     pdf(name, count, kind)
 (OUT / "malformed.pdf").write_bytes(b"This is deliberately not a PDF.\x00\xff")
 manifest_path = OUT / "manifest.json"
 existing = {entry["file"]: entry for entry in json.loads(manifest_path.read_text(encoding="utf-8"))} if manifest_path.exists() else {}
 # Only fixtures owned by this generator; personal PDFs in this folder stay private.
-for name in ("text.pdf", "office.pdf", "mixed.pdf", "thousand.pdf", "scan.pdf", "vector.pdf", "transparency.pdf", "malformed.pdf"):
+for name in ("text.pdf", "office.pdf", "mixed.pdf", "thousand.pdf", "scan.pdf", "vector.pdf", "transparency.pdf", "flat-form.pdf", "malformed.pdf"):
     p = OUT / name
     existing[name] = {"file": name, "sha256": hashlib.sha256(p.read_bytes()).hexdigest(), "bytes": p.stat().st_size, "provenance": "Original deterministic PDFree fixture; scripts/generate-corpus.py", "license": "AGPL-3.0-only"}
 manifest = list(existing.values())

@@ -1,4 +1,4 @@
-use pdf_engine::{EditCommand, Engine, Event};
+use pdf_engine::{EditCommand, Engine, Event, FileAction};
 use std::{path::PathBuf, time::Duration};
 use viewer_core::{FieldKind, FieldSpec, FormEdit, FormValue, TextRect};
 fn wait(e: &Engine, f: impl Fn(&Event) -> bool) -> Event {
@@ -259,6 +259,59 @@ fn fields_create_fill_undo_save_and_reopen() {
         _ => unreachable!(),
     };
     assert_eq!(fields[0].value.text(), "Zoë 東京");
+    drop(e);
+    std::fs::remove_file(output).unwrap();
+}
+
+#[test]
+fn print_copy_writes_the_edited_document_without_switching_to_it() {
+    let e = Engine::spawn(1);
+    e.open(
+        1,
+        1,
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/corpus/blank.pdf"),
+    );
+    wait(&e, |v| matches!(v, Event::Opened { .. }));
+    assert!(e.edit(
+        1,
+        0,
+        1,
+        2,
+        EditCommand::Form(FormEdit::Create(vec![field(FieldKind::Text, "name", 40.)]))
+    ));
+    let rev = changed(&e);
+    let created = fields(&e, rev);
+    assert!(e.edit(
+        1,
+        rev,
+        2,
+        3,
+        EditCommand::Form(FormEdit::SetValue {
+            id: created[0].id,
+            value: FormValue::Text("Printed Name".into()),
+        })
+    ));
+    let rev = changed(&e);
+    let output =
+        std::env::temp_dir().join(format!("pdfree-print-copy-test-{}.pdf", std::process::id()));
+    let _ = std::fs::remove_file(&output);
+    assert!(e.print_copy(1, rev, 3, output.clone()));
+    match wait(&e, |v| matches!(v, Event::FileDone { .. })) {
+        Event::FileDone { kind, path, .. } => {
+            assert_eq!(kind, FileAction::Print);
+            assert_eq!(path.file_name(), output.file_name());
+        }
+        _ => unreachable!(),
+    }
+    assert!(output.exists());
+    e.open(2, 4, output.clone());
+    wait(&e, |v| matches!(v, Event::Opened { document: 2, .. }));
+    e.form_pages(2, 0, vec![0]);
+    let fields = match wait(&e, |v| matches!(v, Event::Forms { document: 2, .. })) {
+        Event::Forms { fields, .. } => fields,
+        _ => unreachable!(),
+    };
+    assert_eq!(fields[0].value.text(), "Printed Name");
     drop(e);
     std::fs::remove_file(output).unwrap();
 }

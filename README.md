@@ -16,6 +16,10 @@ Requirements: Rust 1.97.1 MSVC, Python 3, Visual Studio C++ Build Tools with the
 
 The first build downloads public Rust dependencies. The application itself has no network services, telemetry, JavaScript execution, or cloud requirements. The portable package includes pinned English OCR for field detection. Use the portable folder produced by `scripts/package.ps1` for local deployment; source and the lockfile remain in this repository.
 
+## Releasing
+
+Bump the workspace version in `Cargo.toml`, then push a matching tag (for example `v0.1.0`). The release workflow in [.github/workflows/release.yml](.github/workflows/release.yml) runs the full check suite, builds and packages the portable Windows x64 zip, attests its provenance, and publishes it as a GitHub Release with a SHA-256 checksum. Running the workflow manually produces the same zip as a downloadable build artifact without publishing.
+
 ## Controls
 
 Open PDF or Ctrl+O opens the native picker. Use the scrollbars or wheel to browse, enter a page number to jump, and use toolbar controls to zoom or fit the page. Ctrl +/− changes zoom, Ctrl+0 fits width, PgUp/PgDn changes page, arrows scroll, and Home/End navigates to the beginning/end. Zoom is limited to 25–400%.
@@ -73,9 +77,9 @@ PDFree source: AGPL-3.0-only. MuPDF and mupdf-rs are AGPL licensed; Slint and ot
 
 ## Forms and signatures
 
-Choose **Fill Form** to select a field, enter a value, or change a selection. Tab and Shift+Tab move between fields across pages. Leaving a text field commits one undoable edit. Linked widgets share their field value. Save and Save As retain encryption and verify reopened values, properties, and normal appearances.
+Click the **Form** button to open the form panel. If the current page has no fields, detection runs automatically. Click any field on the page and type directly into it; checkboxes toggle with a click, and Tab and Shift+Tab move between fields across pages. Leaving a text field commits one undoable edit. Linked widgets share their field value. Save and Save As retain encryption and verify reopened values, properties, and normal appearances.
 
-Choose **Prepare Form** to draw fields, move or resize selected rectangles, duplicate/delete fields, and apply labels, required/read-only settings, choice options, or semantic types. Text, multiline text, Date, Number, Checkbox, Radio button, Dropdown, List, Visual signature, and Digital signature are available. Date and Number use standard PDF text fields with PDFree validation metadata. Incompatible values must be resolved or cleared before conversion. Imported complex field trees remain fill-only; PDFree-created radio members support geometry and deletion while keeping group identity.
+The panel's **Field tools** draw fields, move or resize selected rectangles, duplicate/delete fields, and apply labels, required/read-only settings, choice options, or semantic types. Text, multiline text, Date, Number, Checkbox, Radio button, Dropdown, List, Visual signature, and Digital signature are available. Date and Number use standard PDF text fields with PDFree validation metadata. Incompatible values must be resolved or cleared before conversion. Imported complex field trees remain fill-only; PDFree-created radio members support geometry and deletion while keeping group identity.
 
 **Detect Fields** analyzes the current page, a page range, or the document (up to 100 pages per run). It combines text/vector geometry and local English OCR, including scanned and mixed pages. Detection creates fields in one undoable operation and opens uncertain results for review. No personal values are inferred. Cancel before installation leaves the document unchanged. Missing or failed OCR leaves manual drawing available. Corrections and deleted detections are preserved on subsequent runs.
 

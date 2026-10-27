@@ -27,6 +27,21 @@ fn command(args: &[&str]) {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+fn retry_sharing(action: impl FnMut() -> std::io::Result<()>) {
+    let mut action = action;
+    let mut attempt = 0;
+    loop {
+        match action() {
+            Ok(()) => return,
+            Err(e) if e.raw_os_error() == Some(32) && attempt < 10 => {
+                attempt += 1;
+                std::thread::sleep(std::time::Duration::from_millis(10 * attempt));
+            }
+            Err(e) => panic!("{e}"),
+        }
+    }
+}
+
 #[test]
 fn incremental_signature_verifies_independently_and_detects_tampering() {
     run(false);
@@ -129,6 +144,7 @@ fn run(encrypted: bool) {
         let target = dir.join("encrypted-unsigned.pdf");
         pdf.save_with_options(target.to_str().unwrap(), options)
             .unwrap();
+        drop(pdf);
         unsigned = target;
     }
     e.open_with_password(1, 3, unsigned.clone(), password.map(str::to_string));
@@ -248,7 +264,7 @@ fn run(encrypted: bool) {
     // A source modified externally after review must never produce an output.
     let mut changed = original.clone();
     changed.extend_from_slice(b"\n% external change\n");
-    std::fs::write(&unsigned, changed).unwrap();
+    retry_sharing(|| std::fs::write(&unsigned, &changed));
     assert!(e.sign(1, rev, 13, request(failed.clone(), "pdfree-test")));
     assert!(failure(13).contains("outside"));
     assert!(!failed.exists());
@@ -269,5 +285,5 @@ fn run(encrypted: bool) {
             .to_string_lossy()
             .starts_with("pdfree-sign-test-")
     );
-    std::fs::remove_dir_all(resolved).unwrap();
+    retry_sharing(|| std::fs::remove_dir_all(&resolved));
 }

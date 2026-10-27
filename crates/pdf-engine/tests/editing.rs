@@ -434,3 +434,56 @@ fn encryption_permissions_and_invalid_geometry_are_preserved() {
     drop(engine);
     cleanup(dir);
 }
+
+#[test]
+fn print_copy_needs_only_print_permission() {
+    let dir = directory();
+    let source = dir.join("source.pdf");
+    std::fs::copy(workspace().join("tests/corpus/print-only.pdf"), &source).unwrap();
+    let engine = Engine::spawn(1);
+    opened(&engine, source.clone());
+    let target = dir.join("print.pdf");
+    assert!(engine.print_copy(1, 0, 1, target.clone()));
+    assert!(matches!(
+        wait(&engine, |e| matches!(
+            e,
+            Event::FileDone { operation: 1, .. } | Event::FileError { operation: 1, .. }
+        )),
+        Event::FileDone {
+            kind: FileAction::Print,
+            ..
+        }
+    ));
+    assert!(target.exists());
+    let extract_target = dir.join("extract.pdf");
+    assert!(engine.extract(1, 0, 2, extract_target.clone(), vec![0]));
+    assert!(matches!(
+        wait(&engine, |e| matches!(e, Event::FileError { operation: 2, .. })),
+        Event::FileError { message, .. } if message.contains("extraction")
+    ));
+    drop(engine);
+    cleanup(dir);
+}
+
+#[test]
+fn print_copy_rejects_documents_without_print_permission() {
+    let dir = directory();
+    let source = dir.join("source.pdf");
+    std::fs::copy(
+        workspace().join("tests/corpus/restricted-copy.pdf"),
+        &source,
+    )
+    .unwrap();
+    let engine = Engine::spawn(1);
+    engine.open_with_password(1, 1, source.clone(), Some("pdfree-test".into()));
+    wait(&engine, |e| matches!(e, Event::Opened { document: 1, .. }));
+    let target = dir.join("print.pdf");
+    assert!(engine.print_copy(1, 0, 1, target.clone()));
+    assert!(matches!(
+        wait(&engine, |e| matches!(e, Event::FileError { operation: 1, .. })),
+        Event::FileError { message, .. } if message.contains("printing")
+    ));
+    assert!(!target.exists());
+    drop(engine);
+    cleanup(dir);
+}

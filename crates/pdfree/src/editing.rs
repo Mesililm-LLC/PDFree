@@ -28,6 +28,9 @@ pub(crate) struct Editor {
     dialog_pages: Vec<usize>,
     dialog_page: usize,
     close: bool,
+    // Print copies actually handed to the OS printer (recorded under tests).
+    #[cfg(test)]
+    pub(super) printed: Vec<PathBuf>,
 }
 impl State {
     pub(super) fn reset_editor(&mut self, ui: &AppWindow) {
@@ -209,6 +212,56 @@ impl State {
             "Saving PDF…",
         );
     }
+    fn print(&mut self, ui: &AppWindow) {
+        if !ui.get_ready() || self.edit_blocked(ui) {
+            return;
+        }
+        self.editor.operation += 1;
+        let stem = self
+            .path
+            .as_ref()
+            .and_then(|p| p.file_stem())
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "document".into());
+        let directory = std::env::temp_dir().join("pdfree-print");
+        if std::fs::create_dir_all(&directory).is_err() {
+            ui.set_file_message("Could not prepare a print copy in the temp folder.".into());
+            return;
+        }
+        // The operation counter resets when a document is reopened, and print
+        // copies stay on disk for the asynchronous spooler, so probe for a
+        // name that does not collide with an earlier session's copy.
+        let mut target = directory.join(format!("{stem}-print-{}.pdf", self.editor.operation));
+        let mut unique = 1;
+        while std::fs::symlink_metadata(&target).is_ok() {
+            target = directory.join(format!(
+                "{stem}-print-{}-{}.pdf",
+                self.editor.operation, unique
+            ));
+            unique += 1;
+        }
+        self.file_started(
+            ui,
+            self.engine.print_copy(
+                self.document,
+                self.editor.revision,
+                self.editor.operation,
+                target,
+            ),
+            "Preparing to print…",
+        );
+    }
+    fn invoke_print(&mut self, path: &std::path::Path) -> Result<(), String> {
+        #[cfg(test)]
+        {
+            self.editor.printed.push(path.to_path_buf());
+            Ok(())
+        }
+        #[cfg(not(test))]
+        {
+            print_file(path)
+        }
+    }
     pub fn rename(&mut self, ui: &AppWindow, name: String) {
         if !ui.get_ready() || self.edit_blocked(ui) || !ui.get_rename_active() {
             return;
@@ -269,6 +322,7 @@ impl State {
                 | "redo"
                 | "save"
                 | "save-as"
+                | "print"
                 | "rename-start"
                 | "rename-cancel"
                 | "cancel-note"
@@ -362,6 +416,7 @@ impl State {
             }
             "save" => self.save(ui),
             "save-as" if ui.get_ready() => self.editor.save_dialog = true,
+            "print" if ui.get_ready() => self.print(ui),
             "undo" if ui.get_can_undo() => self.submit_edit(ui, EditCommand::Undo),
             "redo" if ui.get_can_redo() => self.submit_edit(ui, EditCommand::Redo),
             "page-tools" if ui.get_ready() => {
@@ -601,6 +656,9 @@ impl State {
                 ui.set_can_annotate(info.can_annotate);
                 ui.set_can_assemble(info.can_assemble);
                 ui.set_page_count(info.pages as i32);
+                ui.set_page_numbers(ModelRc::new(VecModel::from(
+                    (1..=info.pages as i32).collect::<Vec<i32>>(),
+                )));
                 self.cache.clear();
                 self.images.clear();
                 self.previews.clear();
@@ -626,7 +684,12 @@ impl State {
                 kind,
             } if *document == self.document && *operation == self.editor.operation => {
                 ui.set_file_busy(false);
-                if matches!(
+                if *kind == FileAction::Print {
+                    ui.set_file_message(match self.invoke_print(path) {
+                        Ok(()) => "Sent to the default printer.".into(),
+                        Err(message) => message.into(),
+                    });
+                } else if matches!(
                     kind,
                     FileAction::Save | FileAction::SaveAs | FileAction::Rename
                 ) {
@@ -717,4 +780,49 @@ impl State {
         ui.set_annotations(ModelRc::new(VecModel::from(surfaces)));
         ui.set_annotation_items(ModelRc::new(VecModel::from(items)));
     }
+}
+
+/// Ask Windows to print the copy with the default PDF handler. The verb is
+/// asynchronous, so the temp file is left for the spooler to read.
+#[cfg(all(windows, not(test)))]
+fn print_file(path: &std::path::Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    unsafe extern "system" {
+        fn ShellExecuteW(
+            hwnd: *mut std::ffi::c_void,
+            operation: *const u16,
+            file: *const u16,
+            parameters: *const u16,
+            directory: *const u16,
+            show: i32,
+        ) -> isize;
+    }
+    let operation: Vec<u16> = "print\0".encode_utf16().collect();
+    let file: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+    let result = unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            operation.as_ptr(),
+            file.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            0,
+        )
+    };
+    if result > 32 {
+        Ok(())
+    } else {
+        Err(format!(
+            "Windows could not start printing (error {result}). The print copy is at {}",
+            path.display()
+        ))
+    }
+}
+
+#[cfg(not(any(windows, test)))]
+fn print_file(path: &std::path::Path) -> Result<(), String> {
+    Err(format!(
+        "Printing is only supported on Windows. The print copy is at {}",
+        path.display()
+    ))
 }

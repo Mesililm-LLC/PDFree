@@ -371,6 +371,32 @@ pub(crate) fn save(
     if !annotations.is_empty() && !crate::forms::permissions(doc).contains(Permission::ANNOTATE) {
         return Err("This PDF does not permit annotations".into());
     }
+    let mut baseline = Vec::new();
+    doc.write_to_with_options(&mut baseline, options())
+        .map_err(|e| e.to_string())?;
+    let mut copy = PdfDocument::from_bytes(&baseline).map_err(|e| e.to_string())?;
+    if copy.needs_password().map_err(|e| e.to_string())?
+        && !copy
+            .authenticate(password.unwrap_or(""))
+            .map_err(|e| e.to_string())?
+    {
+        return Err("Could not authenticate PDF copy".into());
+    }
+    apply(&copy, annotations)?;
+    publish(doc, &mut copy, source, password, target, current)
+}
+
+/// Publish an already-built copy to `target`. Printing and exporting reuse
+/// this without the source writability and annotation gates so read-only
+/// documents can still be printed or exported.
+pub(crate) fn publish(
+    doc: &PdfDocument,
+    copy: &mut PdfDocument,
+    source: &Path,
+    password: Option<&str>,
+    target: &Path,
+    current: impl Fn() -> bool,
+) -> Result<PathBuf, String> {
     let name = target
         .file_name()
         .and_then(|s| s.to_str())
@@ -387,18 +413,6 @@ pub(crate) fn save(
     if fs::canonicalize(source).map_err(|e| e.to_string())? == target {
         return Err("Save As must use a different filename".into());
     }
-    let mut baseline = Vec::new();
-    doc.write_to_with_options(&mut baseline, options())
-        .map_err(|e| e.to_string())?;
-    let mut copy = PdfDocument::from_bytes(&baseline).map_err(|e| e.to_string())?;
-    if copy.needs_password().map_err(|e| e.to_string())?
-        && !copy
-            .authenticate(password.unwrap_or(""))
-            .map_err(|e| e.to_string())?
-    {
-        return Err("Could not authenticate PDF copy".into());
-    }
-    apply(&copy, annotations)?;
     let (temporary, mut file) = loop {
         let path = parent.join(format!(
             ".pdfree-{}-{}.tmp",
@@ -415,7 +429,6 @@ pub(crate) fn save(
         .map_err(|e| e.to_string())?;
     file.sync_all().map_err(|e| e.to_string())?;
     drop(file);
-    drop(copy);
     let verified = open(&temporary.0, password)?;
     crate::forms::verify(doc, &verified)?;
     if verified.page_count().map_err(|e| e.to_string())?
@@ -447,13 +460,26 @@ pub(crate) fn move_no_replace(source: &Path, target: &Path) -> std::io::Result<(
     let source: Vec<_> = source.as_os_str().encode_wide().chain(Some(0)).collect();
     let target: Vec<_> = target.as_os_str().encode_wide().chain(Some(0)).collect();
     // No REPLACE_EXISTING flag: the kernel atomically rejects destination races.
-    if unsafe {
-        windows_sys::Win32::Storage::FileSystem::MoveFileExW(source.as_ptr(), target.as_ptr(), 0)
-    } == 0
-    {
-        Err(std::io::Error::last_os_error())
-    } else {
-        Ok(())
+    // Antivirus or search indexer can briefly hold a freshly created file, so
+    // retry the atomic move while a transient sharing lock is expected to clear.
+    let mut attempts = 0;
+    loop {
+        if unsafe {
+            windows_sys::Win32::Storage::FileSystem::MoveFileExW(
+                source.as_ptr(),
+                target.as_ptr(),
+                0,
+            )
+        } != 0
+        {
+            return Ok(());
+        }
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() != Some(32) || attempts == 9 {
+            return Err(error);
+        }
+        attempts += 1;
+        std::thread::sleep(std::time::Duration::from_millis(10 * attempts as u64));
     }
 }
 #[cfg(not(windows))]
