@@ -13,6 +13,7 @@ env:
   CARGO_BUILD_JOBS: 1
   LIBCLANG_PATH: ${{ github.workspace }}\.tools\python\clang\native
   BINDGEN_EXTRA_CLANG_ARGS: '-include "${{ github.workspace }}\scripts\msvc-bindgen.h"'
+  PDFREE_OCR_DIR: ${{ github.workspace }}\.tools\forms\ocr
 
 jobs:
   test:
@@ -40,6 +41,14 @@ jobs:
 
     - name: Bootstrap native build prerequisites
       run: ./scripts/bootstrap.ps1
+
+    - name: Bootstrap offline form OCR resources
+      run: |
+        $sevenZip = 'C:\Program Files\7-Zip'
+        if (!(Test-Path -LiteralPath $sevenZip)) { throw '7-Zip is required to extract the pinned OCR tools.' }
+        $env:PATH = "$sevenZip;$env:PATH"
+        $sevenZip | Out-File -FilePath $env:GITHUB_PATH -Append
+        ./scripts/bootstrap-forms-tools.ps1
 
     - name: Check that libclang exists
       run: |
