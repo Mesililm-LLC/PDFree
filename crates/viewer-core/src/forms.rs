@@ -324,3 +324,228 @@ impl FieldSpec {
         Ok(())
     }
 }
+
+fn valid_calendar_date(year: u32, month: u32, day: u32) -> bool {
+    let leap = year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400));
+    let days = match month {
+        4 | 6 | 9 | 11 => 30,
+        2 => {
+            if leap {
+                29
+            } else {
+                28
+            }
+        }
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        _ => 0,
+    };
+    year >= 1 && day >= 1 && day <= days
+}
+
+/// Parse a date written in a common variant format and render it in the
+/// field's expected `format` (one of YYYY-MM-DD, MM/DD/YYYY, DD/MM/YYYY).
+/// Accepts any of `-`, `/`, `.`, space, or comma separators, one- or
+/// two-digit months and days, two-digit years (00-69 → 2000s, 70-99 →
+/// 1900s), English month names, and compact YYYYMMDD / MMDDYYYY digits.
+/// When month/day order is ambiguous, the target format's order decides
+/// (month-first for YYYY-MM-DD). Returns None for anything that is not a
+/// real calendar date.
+pub fn normalize_date(input: &str, format: &str) -> Option<String> {
+    const MONTHS: [&str; 12] = [
+        "january",
+        "february",
+        "march",
+        "april",
+        "may",
+        "june",
+        "july",
+        "august",
+        "september",
+        "october",
+        "november",
+        "december",
+    ];
+    let text = input.trim();
+    if text.is_empty() {
+        return None;
+    }
+    let tokens: Vec<&str> = text
+        .split(|c: char| matches!(c, '-' | '/' | '.' | ',') || c.is_whitespace())
+        .filter(|t| !t.is_empty())
+        .collect();
+    let full_year = |token: &str, value: u32| -> u32 {
+        if token.len() == 2 {
+            if value <= 69 {
+                2000 + value
+            } else {
+                1900 + value
+            }
+        } else {
+            value
+        }
+    };
+    let numeric = |token: &str| -> Option<u32> {
+        token
+            .bytes()
+            .all(|b| b.is_ascii_digit())
+            .then(|| token.parse().ok())
+            .flatten()
+    };
+    let (year, month, day) = if tokens.len() == 1 {
+        // Compact digits: YYYYMMDD or MMDDYYYY.
+        let t = tokens[0];
+        if t.len() != 8 || !t.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        let (a, b, c) = (
+            t[..2].parse::<u32>().ok()?,
+            t[2..4].parse::<u32>().ok()?,
+            t[4..].parse::<u32>().ok()?,
+        );
+        if (1900..=2099).contains(&(a * 100 + b)) {
+            (a * 100 + b, c / 100, c % 100)
+        } else if (1900..=2099).contains(&c) {
+            (c, a, b)
+        } else {
+            return None;
+        }
+    } else if tokens.len() == 3 {
+        let alpha: Vec<usize> = tokens
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| t.bytes().all(|b| b.is_ascii_alphabetic()))
+            .map(|(i, _)| i)
+            .collect();
+        if alpha.len() == 1 {
+            // "24 Nov 1997" or "Nov 24, 1997".
+            let name = tokens[alpha[0]].to_ascii_lowercase();
+            let month = MONTHS
+                .iter()
+                .position(|m| *m == name || m.starts_with(&name[..3.min(name.len())]))
+                .filter(|_| name.len() >= 3)? as u32
+                + 1;
+            let rest: Vec<&str> = tokens
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| *i != alpha[0])
+                .map(|(_, t)| *t)
+                .collect();
+            let (a, b) = (numeric(rest[0])?, numeric(rest[1])?);
+            let (day, year) = if rest[1].len() == 4 || b > 31 {
+                (a, full_year(rest[1], b))
+            } else if rest[0].len() == 4 || a > 31 {
+                (b, full_year(rest[0], a))
+            } else {
+                (a, full_year(rest[1], b))
+            };
+            (year, month, day)
+        } else if alpha.is_empty() {
+            let p: Vec<u32> = tokens.iter().map(|t| numeric(t)).collect::<Option<_>>()?;
+            let year_at = if tokens[0].len() == 4 {
+                0
+            } else if tokens[2].len() == 4 || tokens[2].len() == 2 {
+                2
+            } else {
+                return None;
+            };
+            if year_at == 0 {
+                (full_year(tokens[0], p[0]), p[1], p[2])
+            } else {
+                let (month, day) = if p[0] > 12 {
+                    (p[1], p[0])
+                } else if p[1] > 12 {
+                    (p[0], p[1])
+                } else if format == "DD/MM/YYYY" {
+                    (p[1], p[0])
+                } else {
+                    (p[0], p[1])
+                };
+                (full_year(tokens[2], p[2]), month, day)
+            }
+        } else {
+            return None;
+        }
+    } else {
+        return None;
+    };
+    if !valid_calendar_date(year, month, day) {
+        return None;
+    }
+    Some(match format {
+        "MM/DD/YYYY" => format!("{month:02}/{day:02}/{year:04}"),
+        "DD/MM/YYYY" => format!("{day:02}/{month:02}/{year:04}"),
+        "YYYY-MM-DD" => format!("{year:04}-{month:02}-{day:02}"),
+        _ => return None,
+    })
+}
+
+#[cfg(test)]
+mod date_tests {
+    use super::normalize_date;
+
+    #[test]
+    fn common_date_variants_normalize_to_the_field_format() {
+        // Already canonical stays canonical in every supported format.
+        assert_eq!(
+            normalize_date("1997-11-24", "YYYY-MM-DD").as_deref(),
+            Some("1997-11-24")
+        );
+        // US slash dates into ISO, including one-digit parts and 2-digit years.
+        assert_eq!(
+            normalize_date("11/24/1997", "YYYY-MM-DD").as_deref(),
+            Some("1997-11-24")
+        );
+        assert_eq!(
+            normalize_date("1/5/26", "YYYY-MM-DD").as_deref(),
+            Some("2026-01-05")
+        );
+        assert_eq!(
+            normalize_date("1/5/98", "YYYY-MM-DD").as_deref(),
+            Some("1998-01-05")
+        );
+        // Unambiguous day-first input lands correctly in a US field.
+        assert_eq!(
+            normalize_date("24/11/1997", "MM/DD/YYYY").as_deref(),
+            Some("11/24/1997")
+        );
+        // Ambiguous order follows the target format.
+        assert_eq!(
+            normalize_date("03/04/1997", "DD/MM/YYYY").as_deref(),
+            Some("03/04/1997")
+        );
+        assert_eq!(
+            normalize_date("03/04/1997", "MM/DD/YYYY").as_deref(),
+            Some("03/04/1997")
+        );
+        // Month names, dotted ISO, and compact digits.
+        assert_eq!(
+            normalize_date("Nov 24, 1997", "YYYY-MM-DD").as_deref(),
+            Some("1997-11-24")
+        );
+        assert_eq!(
+            normalize_date("24 November 1997", "MM/DD/YYYY").as_deref(),
+            Some("11/24/1997")
+        );
+        assert_eq!(
+            normalize_date("1997.11.24", "MM/DD/YYYY").as_deref(),
+            Some("11/24/1997")
+        );
+        assert_eq!(
+            normalize_date("19971124", "YYYY-MM-DD").as_deref(),
+            Some("1997-11-24")
+        );
+        assert_eq!(
+            normalize_date("11241997", "YYYY-MM-DD").as_deref(),
+            Some("1997-11-24")
+        );
+        // Leap years are real calendar checks, not pattern matches.
+        assert_eq!(
+            normalize_date("2/29/2000", "YYYY-MM-DD").as_deref(),
+            Some("2000-02-29")
+        );
+        assert_eq!(normalize_date("2/29/1997", "YYYY-MM-DD"), None);
+        assert_eq!(normalize_date("13/40/1997", "YYYY-MM-DD"), None);
+        assert_eq!(normalize_date("not a date", "YYYY-MM-DD"), None);
+        assert_eq!(normalize_date("", "YYYY-MM-DD"), None);
+    }
+}

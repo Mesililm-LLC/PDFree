@@ -111,6 +111,7 @@ impl State {
         ui.set_tiles(ModelRc::default());
         ui.set_previews(ModelRc::default());
         ui.set_pages(ModelRc::default());
+        ui.set_page_numbers(ModelRc::default());
         ui.set_ready(false);
         ui.set_loading(true);
         ui.set_page_count(0);
@@ -337,6 +338,15 @@ impl State {
                 }
                 return;
             }
+            "select-all" => {
+                if ui.get_ready() && !self.sizes.is_empty() {
+                    let page = self.current_page.min(self.sizes.len() - 1);
+                    let rect = self.layout.pages[page];
+                    self.select_text(ui, page, 0.0, 0.0, 0);
+                    self.select_text(ui, page, rect.width, rect.height, 2);
+                }
+                return;
+            }
             "search-close" => {
                 ui.set_search_visible(false);
                 ui.set_search_query("".into());
@@ -381,6 +391,9 @@ impl State {
             _ => None,
         };
         if let Some(zoom) = new_zoom {
+            if action == "fit-page" || action == "fit-width" {
+                ui.set_fit_page(action == "fit-page");
+            }
             let old_zoom = self.zoom;
             let old_y = self.layout.pages[current].y;
             let offset = (-ui.get_scroll_y() - old_y).max(0.0);
@@ -465,6 +478,9 @@ impl State {
                     self.engine.outlines(self.document, self.editor.revision);
                     self.sizes = vec![info.first_page; info.pages];
                     ui.set_page_count(info.pages as i32);
+                    ui.set_page_numbers(ModelRc::new(VecModel::from(
+                        (1..=info.pages as i32).collect::<Vec<i32>>(),
+                    )));
                     ui.set_loading(false);
                     ui.set_ready(true);
                     ui.set_can_copy(info.can_copy);
@@ -765,15 +781,8 @@ impl State {
             ui.set_page_entry((first + 1).to_string().into());
             self.current_page = first;
         }
-        ui.set_status(
-            format!(
-                "Page {} of {}   •   Raster cache {:.1} MiB / 128 MiB",
-                first + 1,
-                self.sizes.len(),
-                self.cache.bytes() as f64 / 1048576.0
-            )
-            .into(),
-        );
+        ui.set_current_page_number(first as i32 + 1);
+        ui.set_status("".into());
         if let Some(error) = &self.render_error {
             ui.set_status(error.as_str().into());
         }

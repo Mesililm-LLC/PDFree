@@ -1,0 +1,22 @@
+# Personal PDFs stay private; only the deterministic fixture set is tracked.
+*
+!.gitignore
+!manifest.json
+!text.pdf
+!office.pdf
+!mixed.pdf
+!thousand.pdf
+!scan.pdf
+!vector.pdf
+!transparency.pdf
+!flat-form.pdf
+!malformed.pdf
+!encrypted.pdf
+!tracemonkey.pdf
+!w3c-dummy.pdf
+!blank.pdf
+!restricted-copy.pdf
+!crop-origin.pdf
+!navigation.pdf
+!interactive-merge.pdf
+!print-only.pdf

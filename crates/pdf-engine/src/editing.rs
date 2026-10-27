@@ -917,6 +917,27 @@ pub(crate) fn extract(
     let copy = restore(&bytes, password)?;
     files::save(&copy, source, password, target, &[], current)
 }
+fn print_rights(doc: &PdfDocument) -> Result<(), String> {
+    info(doc)?;
+    if !crate::forms::permissions(doc).contains(mupdf::pdf::Permission::PRINT) {
+        return Err("This PDF does not permit printing".into());
+    }
+    Ok(())
+}
+/// Write a full copy of the current (edited) document for OS printing.
+/// Printing only needs the print permission: it must work on documents that
+/// deny extraction and on digitally signed read-only files.
+pub(crate) fn print_copy(
+    doc: &PdfDocument,
+    source: &Path,
+    password: Option<&str>,
+    target: &Path,
+    current: impl Fn() -> bool,
+) -> Result<PathBuf, String> {
+    print_rights(doc)?;
+    let mut copy = restore(&serialize(doc)?, password)?;
+    files::publish(doc, &mut copy, source, password, target, current)
+}
 static EXPORT_ID: AtomicU64 = AtomicU64::new(0);
 struct ExportStage(PathBuf);
 impl Drop for ExportStage {

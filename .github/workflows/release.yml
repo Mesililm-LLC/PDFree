@@ -1,0 +1,135 @@
+# Release: tag `vX.Y.Z` publishes a GitHub Release; manual runs only
+# upload the portable zip as a build artifact for inspection.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build, package, and publish (Windows x64)
+    runs-on: windows-2025 # VS 2026 / MSVC v145 toolset required by MuPDF
+    timeout-minutes: 180
+    permissions:
+      contents: write # create the GitHub Release on tag runs
+      id-token: write # build provenance attestation
+      attestations: write
+    steps:
+      - name: Check out the tagged source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pinned Rust toolchain
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.97.1-x86_64-pc-windows-msvc --profile minimal --component rustfmt,clippy
+          rustup default 1.97.1-x86_64-pc-windows-msvc
+          rustc --version
+          cargo --version
+
+      - name: Cache Cargo registry and build output
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Verify tag matches the workspace version
+        shell: pwsh
+        run: |
+          $metadata = cargo metadata --locked --format-version 1 | ConvertFrom-Json
+          $version = ($metadata.packages | Where-Object { $_.name -eq 'pdfree' }).version
+          "VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            $tagVersion = $env:GITHUB_REF_NAME -replace '^v', ''
+            if ($tagVersion -ne $version) {
+              throw "Tag $env:GITHUB_REF_NAME does not match workspace version $version. Bump Cargo.toml first."
+            }
+          }
+          Write-Host "PDFree version: $version"
+
+      - name: Bootstrap pinned native tools
+        shell: pwsh
+        run: |
+          # GitHub Windows images ship 7-Zip outside PATH.
+          $sevenZip = 'C:\Program Files\7-Zip'
+          if (Test-Path -LiteralPath $sevenZip) { $sevenZip | Out-File -FilePath $env:GITHUB_PATH -Append }
+          ./scripts/bootstrap.ps1
+          ./scripts/bootstrap-forms-tools.ps1
+          # check.ps1 invokes CMake directly, so expose the pinned copy job-wide.
+          (Join-Path $PWD '.tools/python/cmake/data/bin') | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      - name: Run format, clippy, and workspace tests
+        shell: pwsh
+        run: ./scripts/check.ps1
+
+      - name: Build the release executable
+        shell: pwsh
+        run: ./scripts/build.ps1 -Release
+
+      - name: Assemble the portable package
+        shell: pwsh
+        run: ./scripts/package.ps1
+
+      - name: Smoke-test the packaged executable
+        shell: pwsh
+        run: |
+          & ./dist/PDFree/pdfree.exe --help
+          if ($LASTEXITCODE -ne 0) { throw "Packaged pdfree.exe --help exited with $LASTEXITCODE" }
+
+      - name: Zip the package and record its checksum
+        shell: pwsh
+        run: |
+          $name = "PDFree-$env:VERSION-windows-x64"
+          $null = New-Item -ItemType Directory -Force -Path artifacts
+          Compress-Archive -Path 'dist/PDFree/*' -DestinationPath "artifacts/$name.zip"
+          $hash = (Get-FileHash -LiteralPath "artifacts/$name.zip" -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $name.zip" | Set-Content -LiteralPath "artifacts/$name.zip.sha256" -Encoding ascii
+          Get-FileHash -LiteralPath "artifacts/$name.zip" -Algorithm SHA256 | Format-List
+
+      - name: Upload the portable zip as a build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PDFree-${{ env.VERSION }}-windows-x64
+          path: |
+            artifacts/*.zip
+            artifacts/*.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Attest build provenance
+        if: github.ref_type == 'tag'
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: artifacts/*.zip
+
+      - name: Publish the GitHub Release
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $name = "PDFree-$env:VERSION-windows-x64"
+          gh release create $env:GITHUB_REF_NAME `
+            "artifacts/$name.zip" "artifacts/$name.zip.sha256" `
+            --verify-tag `
+            --title "PDFree $env:GITHUB_REF_NAME" `
+            --generate-notes
