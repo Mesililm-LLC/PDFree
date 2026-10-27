@@ -368,7 +368,7 @@ pub fn verify_signature(
     // crafted PDF could exclude unrelated mutable bytes from integrity checks.
     let raw = &bytes[r[1] + 1..r[2] - 1];
     if raw.len() != cms.len() * 2
-        || !raw.chunks_exact(2).zip(&cms).all(|(hex, value)| {
+        || !raw.as_chunks::<2>().0.iter().zip(&cms).all(|(hex, value)| {
             let digit = |b: u8| (b as char).to_digit(16);
             digit(hex[0])
                 .zip(digit(hex[1]))

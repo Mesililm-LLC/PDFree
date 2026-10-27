@@ -1,7 +1,8 @@
+use crate::backend::{DisplayListBackend, DocumentBackend, open_document};
 use crate::{DocumentInfo, EngineError, Event, FileAction, FileCommandAction, Shared, raster};
 use crossbeam_channel::{Receiver, Sender, bounded};
 use mupdf::{
-    DisplayList, Document,
+    Document,
     pdf::{PdfDocument, Permission},
 };
 use std::{
@@ -15,7 +16,7 @@ use viewer_core::{PageSize, PixelTile, RenderQueue, RenderRequest};
 struct Job {
     content: u64,
     request: RenderRequest,
-    list: Arc<DisplayList>,
+    list: Arc<dyn DisplayListBackend>,
     thumbnail: bool,
 }
 struct Completed {
@@ -28,7 +29,10 @@ struct Completed {
 
 fn emit(shared: &Shared, events: &Sender<Event>, mut event: Event) -> bool {
     loop {
-        match events.send_timeout(event, Duration::from_millis(10)) {
+        match events.send_timeout(
+            event,
+            Duration::from_millis(crate::constants::CHANNEL_SEND_TIMEOUT_MILLIS),
+        ) {
             Ok(()) => return true,
             Err(crossbeam_channel::SendTimeoutError::Timeout(value)) => {
                 if shared.stopping.load(Ordering::Acquire) {
@@ -66,7 +70,8 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                         };
                         let valid =
                             valid && shared.current_content(job.request.key.document, job.content);
-                        let pixels = valid.then(|| raster::render(&job.list, job.request.key));
+                        let pixels =
+                            valid.then(|| raster::render(job.list.as_ref(), job.request.key));
                         let result = Completed {
                             content: job.content,
                             thumbnail: job.thumbnail,
@@ -87,6 +92,7 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
     drop(completed);
     drop(job_rx);
     let mut document: Option<PdfDocument> = None;
+    let mut backend: Option<Box<dyn DocumentBackend>> = None;
     let mut detection: Option<crate::detection::Detection> = None;
     let mut detection_done: Option<(u64, usize, Vec<usize>)> = None;
     let mut can_copy = false;
@@ -105,10 +111,10 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
     let mut document_id = 0;
     let mut geometry: Vec<Option<PageSize>> = Vec::new();
     let mut cursor = 0;
-    let mut lists: HashMap<usize, Arc<DisplayList>> = HashMap::new();
+    let mut lists: HashMap<usize, Arc<dyn DisplayListBackend>> = HashMap::new();
     let mut inflight = HashSet::new();
     let mut deferred_results = std::collections::VecDeque::new();
-    let mut queue = RenderQueue::new(128);
+    let mut queue = RenderQueue::new(crate::constants::RENDER_QUEUE_CAPACITY);
 
     while !shared.stopping.load(Ordering::Acquire) {
         let desired = {
@@ -130,6 +136,7 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
             navigation = crate::navigation::Navigation::default();
             lists.clear();
             document = None;
+            backend = None;
             geometry.clear();
             queue.replace(Vec::new());
             document_id = open.document;
@@ -164,7 +171,7 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                 let count = doc
                     .page_count()
                     .map_err(|e| EngineError::InvalidDocument(e.to_string()))?;
-                if count <= 0 || count > 1_000_000 {
+                if count <= 0 || count as usize > crate::constants::MAX_PAGES {
                     return Err(EngineError::InvalidDocument(
                         "Page count must be between 1 and 1,000,000".into(),
                     ));
@@ -201,6 +208,10 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                     geometry[0] = Some(info.first_page);
                     cursor = 1;
                     document = Some(doc);
+                    // Create the backend trait abstraction for the opened document.
+                    if let Ok(b) = open_document(&open.path, open.password.as_deref()) {
+                        backend = Some(b);
+                    }
                     emit(
                         &shared,
                         &events,
@@ -578,7 +589,9 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                                 while deferred_results.len() < inflight.len()
                                     && !shared.stopping.load(Ordering::Acquire)
                                 {
-                                    match results.recv_timeout(Duration::from_millis(10)) {
+                                    match results.recv_timeout(Duration::from_millis(
+                                        crate::constants::CHANNEL_RECV_TIMEOUT_MILLIS,
+                                    )) {
                                         Ok(result) => deferred_results.push_back(result),
                                         Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
                                         Err(_) => break,
@@ -588,10 +601,11 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                                     Err("Document changed before rename completed".into())
                                 } else {
                                     lists.clear();
+                                    drop(backend.take());
                                     drop(document.take());
                                     let (baseline, result) = prepared.commit(&source_path);
                                     document = Some(baseline);
-                                    match result {
+                                    let result = match result {
                                         Ok(path) => {
                                             source_path = path.clone();
                                             if let Some(h) = journal.as_mut() {
@@ -610,7 +624,10 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                                             source_path = failure.path;
                                             Err(failure.message)
                                         }
-                                    }
+                                    };
+                                    backend = open_document(&source_path, session_password.as_deref())
+                                        .ok();
+                                    result
                                 }
                             }
                         }
@@ -627,7 +644,9 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                                 while deferred_results.len() < inflight.len()
                                     && !shared.stopping.load(Ordering::Acquire)
                                 {
-                                    match results.recv_timeout(Duration::from_millis(10)) {
+                                    match results.recv_timeout(Duration::from_millis(
+                                        crate::constants::CHANNEL_RECV_TIMEOUT_MILLIS,
+                                    )) {
                                         Ok(result) => deferred_results.push_back(result),
                                         Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
                                         Err(_) => break,
@@ -639,6 +658,7 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                                     // Release all page/document handles before Windows moves the open file.
                                     lists.clear();
                                     notes_cache.clear();
+                                    drop(backend.take());
                                     document = None;
                                     let moved =
                                         crate::files::move_no_replace(&source_path, &target);
@@ -651,7 +671,7 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                                         &reopen_path,
                                         session_password.as_deref(),
                                     );
-                                    match reopened {
+                                    let result = match reopened {
                                         Ok(doc) => {
                                             document = Some(doc);
                                             match moved {
@@ -700,7 +720,15 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                                                 }
                                             }
                                         }
+                                    };
+                                    if document.is_some() {
+                                        backend = open_document(
+                                            &source_path,
+                                            session_password.as_deref(),
+                                        )
+                                        .ok();
                                     }
+                                    result
                                 }
                             }
                         }
@@ -754,7 +782,7 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
             let pages: Vec<_> = pages
                 .into_iter()
                 .filter(|p| *p < geometry.len())
-                .take(16)
+                .take(crate::constants::MAX_NOTES_PAGES)
                 .collect();
             annotation_cache.retain(|p, _| pages.contains(p));
             annotation_queue = pages.into();
@@ -765,7 +793,7 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
             let pages: Vec<_> = pages
                 .into_iter()
                 .filter(|p| *p < geometry.len())
-                .take(16)
+                .take(crate::constants::MAX_NOTES_PAGES)
                 .collect();
             notes_cache.retain(|p, _| pages.contains(p));
             notes_queue = pages.into();
@@ -1085,11 +1113,16 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                 }
                 if let std::collections::hash_map::Entry::Vacant(entry) = lists.entry(page) {
                     let started = Instant::now();
-                    match doc.load_page(page as i32).and_then(|p| {
-                        let bounds = p.bounds()?;
-                        let list = p.to_display_list(true)?;
-                        Ok((PageSize::new(bounds.width(), bounds.height()), list))
-                    }) {
+                    let result = backend
+                        .as_ref()
+                        .ok_or_else(|| "PDF backend is unavailable".to_string())
+                        .and_then(|backend| backend.load_page(page as i32))
+                        .and_then(|page| {
+                            let size = page.bounds()?;
+                            let list = page.to_display_list(true)?;
+                            Ok((size, list))
+                        });
+                    match result {
                         Ok((size, list)) => {
                             if geometry[page] != Some(size) {
                                 geometry[page] = Some(size);
@@ -1102,7 +1135,7 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                                     },
                                 );
                             }
-                            entry.insert(Arc::new(list));
+                            entry.insert(Arc::from(list));
                             emit(
                                 &shared,
                                 &events,
@@ -1157,37 +1190,50 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                     );
                     continue;
                 }
-                let result = doc.load_page(page as i32).and_then(|p| {
-                    let bounds = p.bounds()?;
-                    let scale = (140.0 / bounds.width())
-                        .min(160.0 / bounds.height())
-                        .min(1.0);
-                    let scale_milli = (scale * 1000.0).floor().max(1.0) as u32;
-                    let scale = scale_milli as f32 / 1000.0;
-                    let key = viewer_core::TileKey {
-                        document: document_id,
-                        page,
-                        scale_milli,
-                        rotation: 0,
-                        x: 0,
-                        y: 0,
-                        width: (bounds.width() * scale).ceil().clamp(1.0, 140.0) as u32,
-                        height: (bounds.height() * scale).ceil().clamp(1.0, 160.0) as u32,
-                    };
-                    Ok((key, p.to_display_list(true)?))
-                });
+                let result = backend
+                    .as_ref()
+                    .ok_or_else(|| "PDF backend is unavailable".to_string())
+                    .and_then(|backend| backend.load_page(page as i32))
+                    .and_then(|page_handle| {
+                        let bounds = page_handle.bounds()?;
+                        let scale = (crate::constants::THUMBNAIL_WIDTH_SCALE / bounds.width)
+                            .min(crate::constants::THUMBNAIL_HEIGHT_SCALE / bounds.height)
+                            .min(crate::constants::THUMBNAIL_SCALE_MIN);
+                        let scale_milli = (scale * crate::constants::SCALE_MILLI_FACTOR)
+                            .floor()
+                            .max(crate::constants::THUMBNAIL_SCALE_MIN)
+                            as u32;
+                        let scale = scale_milli as f32 / crate::constants::SCALE_MILLI_FACTOR;
+                        let key = viewer_core::TileKey {
+                            document: document_id,
+                            page,
+                            scale_milli,
+                            rotation: 0,
+                            x: 0,
+                            y: 0,
+                            width: (bounds.width * scale).ceil().clamp(
+                                crate::constants::THUMBNAIL_SCALE_MIN,
+                                crate::constants::THUMBNAIL_WIDTH_MAX,
+                            ) as u32,
+                            height: (bounds.height * scale).ceil().clamp(
+                                crate::constants::THUMBNAIL_SCALE_MIN,
+                                crate::constants::THUMBNAIL_HEIGHT_MAX,
+                            ) as u32,
+                        };
+                        Ok((key, page_handle.to_display_list(true)?))
+                    });
                 match result {
                     Ok((key, list)) => {
                         let request = RenderRequest {
                             key,
                             generation: 0,
-                            priority: u32::MAX,
+                            priority: crate::constants::THUMBNAIL_PRIORITY,
                         };
                         inflight.insert((key, 0, true, content));
                         let _ = jobs.send(Job {
                             content,
                             request,
-                            list: Arc::new(list),
+                            list: Arc::from(list),
                             thumbnail: true,
                         });
                     }
@@ -1236,7 +1282,9 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                 cursor += 1;
             }
         }
-        let _ = wake.recv_timeout(Duration::from_millis(2));
+        let _ = wake.recv_timeout(Duration::from_millis(
+            crate::constants::WAKE_RECV_TIMEOUT_MILLIS,
+        ));
     }
     drop(jobs);
     // Dropping the receiver releases workers even if shutdown finds completed tiles queued.

@@ -74,7 +74,7 @@ impl Navigation {
 }
 impl State {
     pub fn hover_link(&self, ui: &AppWindow, page: usize, x: f32, y: f32) {
-        let scale = self.zoom * 96. / 72.;
+        let scale = self.viewport.zoom * 96. / 72.;
         let (x, y) = (x / scale, y / scale);
         ui.set_link_hover(self.navigation.links.get(&page).is_some_and(|links| {
             links.iter().any(|l| {
@@ -99,7 +99,7 @@ impl State {
         {
             return;
         }
-        let scale = self.zoom * 96. / 72.;
+        let scale = self.viewport.zoom * 96. / 72.;
         let (x, y) = (x / scale, y / scale);
         if let Some(link) = self.navigation.links.get(&page).and_then(|links| {
             links.iter().find(|l| {
@@ -117,15 +117,15 @@ impl State {
             LinkDestination::Internal { page, x, y } => {
                 self.tools.clear_selection(ui);
                 self.navigate(ui, page);
-                if let Some(rect) = self.layout.pages.get(page) {
-                    ui.set_scroll_y(
-                        -(rect.y + y * self.zoom * 96. / 72.)
-                            .clamp(0., (self.layout.height - ui.get_view_height()).max(0.)),
-                    );
-                    ui.set_scroll_x(
-                        -(rect.x + x * self.zoom * 96. / 72.)
-                            .clamp(0., (self.layout.width - ui.get_view_width()).max(0.)),
-                    );
+                if let Some(rect) = self.viewport.layout.pages.get(page) {
+                    ui.set_scroll_y(-(rect.y + y * self.viewport.zoom * 96. / 72.).clamp(
+                        0.,
+                        (self.viewport.layout.height - ui.get_view_height()).max(0.),
+                    ));
+                    ui.set_scroll_x(-(rect.x + x * self.viewport.zoom * 96. / 72.).clamp(
+                        0.,
+                        (self.viewport.layout.width - ui.get_view_width()).max(0.),
+                    ));
                 }
             }
             LinkDestination::External(url) => {

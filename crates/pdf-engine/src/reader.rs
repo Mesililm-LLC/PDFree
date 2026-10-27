@@ -6,9 +6,6 @@ use std::{
 };
 use viewer_core::{PageText, PixelTile, SearchHit, TextGlyph, TextRect, TileKey};
 
-const MAX_GLYPHS: usize = 100_000;
-const MAX_HITS: usize = 10_000;
-
 #[derive(Default)]
 pub(crate) struct Reader {
     text: VecDeque<usize>,
@@ -28,14 +25,22 @@ struct Search {
 
 impl Reader {
     pub fn text_pages(&mut self, pages: Vec<usize>, count: usize) {
-        let pages: Vec<_> = pages.into_iter().filter(|p| *p < count).take(16).collect();
+        let pages: Vec<_> = pages
+            .into_iter()
+            .filter(|p| *p < count)
+            .take(crate::constants::MAX_TEXT_PAGES)
+            .collect();
         self.text_cache.retain(|p, _| pages.contains(p));
         // Every latest-value command republishes its wanted snapshots. A leave/reenter
         // transition may have been coalesced away after the UI dropped its reference.
         self.text = pages.into();
     }
     pub fn thumbnails(&mut self, pages: Vec<usize>, count: usize) {
-        self.thumbnail_wanted = pages.into_iter().filter(|p| *p < count).take(32).collect();
+        self.thumbnail_wanted = pages
+            .into_iter()
+            .filter(|p| *p < count)
+            .take(crate::constants::MAX_THUMBNAIL_PAGES)
+            .collect();
         self.thumbnail_cache
             .retain(|p, _| self.thumbnail_wanted.contains(p));
         self.thumbnails = self.thumbnail_wanted.iter().copied().collect();
@@ -63,7 +68,7 @@ impl Reader {
         Some(pixels)
     }
     pub fn search(&mut self, id: u64, mut query: String) {
-        if query.len() > 512 || query.contains('\0') {
+        if query.len() > crate::constants::MAX_SEARCH_QUERY_CHARS || query.contains('\0') {
             query.clear();
         }
         self.search = Some(Search {
@@ -127,7 +132,7 @@ impl Reader {
                 text.search_cb(&task.query, &mut hits, |hits, quads| {
                     if !shared.current_document(document)
                         || shared.search.load(Ordering::Acquire) != task.id
-                        || task.hits + hits.len() >= MAX_HITS
+                        || task.hits + hits.len() >= crate::constants::MAX_HITS
                     {
                         return SearchHitResponse::AbortSearch;
                     }
@@ -148,7 +153,7 @@ impl Reader {
             task.cursor += 1;
         }
         task.hits += hits.len();
-        let truncated = task.hits >= MAX_HITS;
+        let truncated = task.hits >= crate::constants::MAX_HITS;
         let done = task.query.is_empty() || task.cursor >= count || truncated;
         let search_id = task.id;
         let event = Event::SearchPage {
@@ -198,7 +203,7 @@ fn extract(doc: &Document, page: usize) -> Result<PageText, mupdf::Error> {
     for block in text.blocks() {
         for line in block.lines() {
             for ch in line.chars() {
-                if output.glyphs.len() == MAX_GLYPHS {
+                if output.glyphs.len() == crate::constants::MAX_GLYPHS {
                     output.truncated = true;
                     return Ok(output);
                 }

@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTBACKTRACE: 1
+  MUPDF_MSVC_PLATFORM_TOOLSET: v145
+  CARGO_BUILD_JOBS: 1
+  LIBCLANG_PATH: ${{ github.workspace }}\.tools\python\clang\native
+  BINDGEN_EXTRA_CLANG_ARGS: '-include "${{ github.workspace }}\scripts\msvc-bindgen.h"'
+  PDFREE_OCR_DIR: ${{ github.workspace }}\.tools\forms\ocr
+
+jobs:
+  test:
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: stable
+        components: rustfmt, clippy
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.13'
+
+    - name: Install build dependencies
+      run: |
+        pip install cmake ninja
+        Write-Host "Build dependencies installed"
+
+    - name: Bootstrap native build prerequisites
+      run: ./scripts/bootstrap.ps1
+
+    - name: Bootstrap offline form OCR resources
+      run: |
+        $sevenZip = 'C:\Program Files\7-Zip'
+        if (!(Test-Path -LiteralPath $sevenZip)) { throw '7-Zip is required to extract the pinned OCR tools.' }
+        $env:PATH = "$sevenZip;$env:PATH"
+        $sevenZip | Out-File -FilePath $env:GITHUB_PATH -Append
+        ./scripts/bootstrap-forms-tools.ps1
+
+    - name: Check that libclang exists
+      run: |
+        if (!(Test-Path -LiteralPath "$env:LIBCLANG_PATH\libclang.dll")) {
+          Write-Error "libclang.dll not found at $env:LIBCLANG_PATH. Run scripts/bootstrap.ps1 first or provide it."
+          exit 1
+        }
+
+    - name: Run cargo fmt check
+      run: |
+        & cargo fmt --all --check
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    - name: Run cargo clippy
+      run: |
+        & cargo clippy --workspace --all-targets --locked -- -D warnings
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    - name: Run cargo test
+      run: |
+        & cargo test --workspace --locked
+        exit $LASTEXITCODE

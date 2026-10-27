@@ -85,7 +85,7 @@ pub(crate) fn restore(bytes: &[u8], password: Option<&str>) -> Result<PdfDocumen
 }
 pub(crate) fn info(doc: &PdfDocument) -> Result<DocumentInfo, String> {
     let pages = doc.page_count().map_err(error)?;
-    if !(1..=100_000).contains(&pages) {
+    if pages <= 0 || pages as usize > crate::constants::MAX_EDIT_PAGES {
         return Err("Editing supports 1–100,000 pages".into());
     }
     let bounds = doc.load_page(0).and_then(|p| p.bounds()).map_err(error)?;
@@ -140,7 +140,10 @@ pub(crate) fn annotations(
     let mut bytes = 0;
     let mut truncated = false;
     for (ordinal, a) in native.annotations().enumerate() {
-        if ordinal >= 10_000 || result.len() >= 256 || bytes >= 256 * 1024 {
+        if ordinal >= crate::constants::MAX_ANNOTATIONS_PER_PAGE
+            || result.len() >= crate::constants::MAX_ANNOTATIONS_RETURNED
+            || bytes >= crate::constants::MAX_ANNOTATION_BYTES
+        {
             truncated = true;
             break;
         }
@@ -149,7 +152,10 @@ pub(crate) fn annotations(
             PdfAnnotationType::Text => {
                 let r = a.rect().map_err(error)?;
                 let text = a.contents().map_err(error)?.unwrap_or("");
-                let mut end = text.len().min(16_384).min(256 * 1024 - bytes);
+                let mut end = text
+                    .len()
+                    .min(crate::constants::MAX_TEXT_LENGTH)
+                    .min(crate::constants::MAX_ANNOTATION_BYTES - bytes);
                 while !text.is_char_boundary(end) {
                     end -= 1;
                 }
@@ -164,7 +170,7 @@ pub(crate) fn annotations(
                 }
             }
             PdfAnnotationType::Highlight => {
-                if a.quad_count().map_err(error)? > 1000 {
+                if a.quad_count().map_err(error)? as usize > crate::constants::MAX_QUAD_COUNT {
                     truncated = true;
                     continue;
                 }
@@ -228,7 +234,7 @@ pub(crate) fn mutate(doc: &mut PdfDocument, command: &EditCommand) -> Result<usi
         return crate::forms::apply(doc, edit);
     }
     let info = info(doc)?;
-    if matches!(command,EditCommand::UpdateNote{page,ordinal,..}|EditCommand::Color{page,ordinal,..}|EditCommand::DeleteAnnotation{page,ordinal} if *page>=info.pages||*ordinal>=10_000)
+    if matches!(command,EditCommand::UpdateNote{page,ordinal,..}|EditCommand::Color{page,ordinal,..}|EditCommand::DeleteAnnotation{page,ordinal} if *page>=info.pages||*ordinal>=crate::constants::MAX_ANNOTATIONS_PER_PAGE)
     {
         return Err("Annotation page is outside the document".into());
     }
@@ -256,7 +262,10 @@ pub(crate) fn mutate(doc: &mut PdfDocument, command: &EditCommand) -> Result<usi
             ordinal,
             text,
         } => {
-            if text.trim().is_empty() || text.len() > 16_384 || text.contains('\0') {
+            if text.trim().is_empty()
+                || text.len() > crate::constants::MAX_TEXT_LENGTH
+                || text.contains('\0')
+            {
                 return Err("Notes need 1–16,384 UTF-8 bytes of text".into());
             }
             let native = doc.load_pdf_page(*page as i32).map_err(error)?;
@@ -348,7 +357,7 @@ pub(crate) fn mutate(doc: &mut PdfDocument, command: &EditCommand) -> Result<usi
             Ok(focus)
         }
         EditCommand::Blank { at } => {
-            if *at > info.pages || info.pages >= 100_000 {
+            if *at > info.pages || info.pages >= crate::constants::MAX_EDIT_PAGES {
                 return Err("Invalid insertion position or page limit".into());
             }
             let b = doc
@@ -370,7 +379,7 @@ pub(crate) fn mutate(doc: &mut PdfDocument, command: &EditCommand) -> Result<usi
 }
 fn insert(doc: &mut PdfDocument, paths: &[PathBuf], at: usize) -> Result<(), String> {
     let count = doc.page_count().map_err(error)? as usize;
-    if paths.is_empty() || paths.len() > 16 || at > count {
+    if paths.is_empty() || paths.len() > crate::constants::MAX_INSERT_PATHS || at > count {
         return Err("Choose 1–16 PDF files and a valid insertion position".into());
     }
     let mut sources = Vec::new();
@@ -424,7 +433,7 @@ struct ImportGraph<'a> {
 }
 impl ImportGraph<'_> {
     fn destination(&mut self, value: &PdfObject, depth: usize) -> Result<PdfObject, String> {
-        if depth > 64 {
+        if depth > crate::constants::MAX_IMPORT_DEPTH {
             return Err("Destination nesting exceeds limits".into());
         }
         if value.is_name().map_err(error)? || value.is_string().map_err(error)? {
@@ -480,7 +489,9 @@ impl ImportGraph<'_> {
         Ok(dest)
     }
     fn copy(&mut self, value: &PdfObject, depth: usize) -> Result<PdfObject, String> {
-        if depth > 64 || self.nodes >= 100_000 {
+        if depth > crate::constants::MAX_IMPORT_DEPTH
+            || self.nodes >= crate::constants::MAX_IMPORT_NODES
+        {
             return Err("Imported interactive objects exceed complexity limits".into());
         }
         self.nodes += 1;
@@ -504,13 +515,15 @@ impl ImportGraph<'_> {
             if value.is_stream().map_err(error)? {
                 if let Some(length) = resolved.get_dict("Length").map_err(error)? {
                     let length = length.as_int().map_err(error)?;
-                    if length < 0 || length as usize > 64 * 1024 * 1024 {
+                    if length < 0 || length as usize > crate::constants::MAX_STREAM_BYTES {
                         return Err("Imported stream exceeds 64 MiB limit".into());
                     }
                 }
                 let bytes = value.read_raw_stream().map_err(error)?;
                 self.stream_bytes = self.stream_bytes.saturating_add(bytes.len());
-                if bytes.len() > 64 * 1024 * 1024 || self.stream_bytes > 128 * 1024 * 1024 {
+                if bytes.len() > crate::constants::MAX_STREAM_BYTES
+                    || self.stream_bytes > crate::constants::MAX_TOTAL_STREAM_BYTES
+                {
                     return Err("Imported stream exceeds 64 MiB limit".into());
                 }
                 reserved
@@ -520,7 +533,7 @@ impl ImportGraph<'_> {
             return Ok(reserved);
         }
         if value.is_array().map_err(error)? {
-            if value.len().map_err(error)? > 10_000 {
+            if value.len().map_err(error)? > crate::constants::MAX_IMPORT_ARRAY_LEN {
                 return Err("Imported interactive array exceeds limits".into());
             }
             let mut copied = self.target.new_array().map_err(error)?;
@@ -532,7 +545,7 @@ impl ImportGraph<'_> {
             return Ok(copied);
         }
         if value.is_dict().map_err(error)? {
-            if value.dict_len().map_err(error)? > 2000 {
+            if value.dict_len().map_err(error)? > crate::constants::MAX_IMPORT_DICT_LEN {
                 return Err("Imported dictionary exceeds limits".into());
             }
             if value.get_dict("Type").map_err(error)?.is_some_and(|kind| {
@@ -638,7 +651,7 @@ impl ImportGraph<'_> {
     }
 }
 fn validate_action(action: &PdfObject, depth: usize) -> Result<(), String> {
-    if depth > 64 {
+    if depth > crate::constants::MAX_IMPORT_DEPTH {
         return Err("Imported action chain exceeds limits".into());
     }
     if !action.is_dict().map_err(error)? {
@@ -669,7 +682,7 @@ fn named_destinations(source: &PdfDocument) -> Result<HashMap<String, PdfObject>
         .ok_or("Missing source catalog")?;
     let mut result = HashMap::new();
     if let Some(legacy) = root.get_dict("Dests").map_err(error)? {
-        if legacy.dict_len().map_err(error)? > 100_000 {
+        if legacy.dict_len().map_err(error)? > crate::constants::MAX_EDIT_PAGES {
             return Err("Legacy destination dictionary exceeds limits".into());
         }
         for entry in legacy.dict_iter().map_err(error)? {
@@ -691,7 +704,10 @@ fn named_destinations(source: &PdfDocument) -> Result<HashMap<String, PdfObject>
     let mut nodes = 0;
     while let Some((node, depth)) = pending.pop() {
         nodes += 1;
-        if nodes > 10000 || depth > 64 || result.len() > 100000 {
+        if nodes > 10000
+            || depth > crate::constants::MAX_IMPORT_DEPTH
+            || result.len() > crate::constants::MAX_EDIT_PAGES
+        {
             return Err("Destination name tree exceeds limits".into());
         }
         if let Some(names) = node.get_dict("Names").map_err(error)? {

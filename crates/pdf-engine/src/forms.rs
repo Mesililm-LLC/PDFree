@@ -47,7 +47,7 @@ fn objects(doc: &PdfDocument) -> Result<Vec<PdfObject>> {
         stack.push((fields, 0));
     }
     while let Some((o, depth)) = stack.pop() {
-        if depth > 64 || found.len() + stack.len() > 10_000 {
+        if depth > crate::constants::MAX_IMPORT_DEPTH || found.len() + stack.len() > 10_000 {
             return Err("Form tree exceeds the safe inspection limit.".into());
         }
         if o.is_array().map_err(err)? {
@@ -153,7 +153,7 @@ fn options(o: &PdfObject) -> Result<(Vec<String>, Vec<String>)> {
     let mut labels = vec![];
     let mut exports = vec![];
     if let Some(opts) = o.get_dict_inheritable("Opt").map_err(err)? {
-        if opts.len().map_err(err)? > 256 {
+        if opts.len().map_err(err)? > crate::constants::MAX_FIELD_OPTIONS {
             return Err("Field exceeds 256 options.".into());
         }
         for i in 0..opts.len().map_err(err)? {
@@ -196,7 +196,7 @@ fn managed_radio(o: &PdfObject) -> Result<bool> {
     let Some(kids) = o.get_dict("Kids").map_err(err)? else {
         return Ok(false);
     };
-    if kids.len().map_err(err)? > 2_000 {
+    if kids.len().map_err(err)? > crate::constants::MAX_RADIO_KIDS {
         return Ok(false);
     }
     for i in 0..kids.len().map_err(err)? {
@@ -219,7 +219,7 @@ fn button_values(doc: &PdfDocument, field: i32) -> Result<HashSet<String>> {
     let o = doc.new_indirect(field, 0).map_err(err)?;
     let mut widgets = vec![o.try_clone().map_err(err)?];
     if let Some(kids) = o.get_dict("Kids").map_err(err)? {
-        if kids.len().map_err(err)? > 10_000 {
+        if kids.len().map_err(err)? > crate::constants::MAX_BUTTON_KIDS {
             return Err("Button group exceeds the safe limit.".into());
         }
         widgets.clear();
@@ -237,7 +237,11 @@ fn button_values(doc: &PdfDocument, field: i32) -> Result<HashSet<String>> {
             && let Some(states) = ap.get_dict("N").map_err(err)?
             && states.is_dict().map_err(err)?
         {
-            for i in 0..states.dict_len().map_err(err)?.min(64) {
+            for i in 0..states
+                .dict_len()
+                .map_err(err)?
+                .min(crate::constants::MAX_APPEARANCE_STATES)
+            {
                 let k = states
                     .get_dict_key(i as i32)
                     .map_err(err)?
@@ -306,7 +310,11 @@ pub(crate) fn suppressed(doc: &PdfDocument, page: usize) -> Result<Vec<TextRect>
         .as_indirect()
         .map_err(err)?;
     if let Some(list) = root(doc)?.get_dict("PDFreeSuppressedFields").map_err(err)? {
-        for i in 0..list.len().map_err(err)?.min(2_000) {
+        for i in 0..list
+            .len()
+            .map_err(err)?
+            .min(crate::constants::MAX_SUPPRESSED_FIELDS)
+        {
             let item = list
                 .get_array(i as i32)
                 .map_err(err)?
@@ -330,7 +338,7 @@ fn suppress(doc: &PdfDocument, f: &FormField) -> Result<()> {
             .get_dict("PDFreeSuppressedFields")
             .map_err(err)?
             .unwrap_or(doc.new_array().map_err(err)?);
-        if list.len().map_err(err)? >= 2_000 {
+        if list.len().map_err(err)? >= crate::constants::MAX_SUPPRESSED_FIELDS {
             return Err("Detection exclusion limit reached.".into());
         }
         let mut item = doc.new_dict().map_err(err)?;
@@ -354,7 +362,7 @@ pub(crate) fn page(doc: &PdfDocument, index: usize) -> Result<Vec<FormField>> {
     let b = native.bounds().map_err(err)?;
     let mut result = vec![];
     for (n, w) in native.widgets().enumerate() {
-        if n >= 512 {
+        if n >= crate::constants::MAX_WIDGETS_PER_PAGE {
             return Err("This page exceeds the 512-widget preview limit.".into());
         }
         let a = w.annotation();
@@ -385,7 +393,11 @@ pub(crate) fn page(doc: &PdfDocument, index: usize) -> Result<Vec<FormField>> {
         let value = if let Some(v) = f.get_dict_inheritable("V").map_err(err)? {
             if v.is_array().map_err(err)? {
                 let mut s = vec![];
-                for i in 0..v.len().map_err(err)?.min(256) {
+                for i in 0..v
+                    .len()
+                    .map_err(err)?
+                    .min(crate::constants::MAX_SELECTION_VALUES)
+                {
                     s.push(
                         v.get_array(i as i32)
                             .map_err(err)?
@@ -450,20 +462,28 @@ pub(crate) fn page(doc: &PdfDocument, index: usize) -> Result<Vec<FormField>> {
             review: integer(&o, "PDFreeReview")? != 0,
             date_format: match string(&f, "PDFreeDate")? {
                 s if !s.is_empty() => s,
-                _ => "YYYY-MM-DD".into(),
+                _ => crate::constants::DEFAULT_DATE_FORMAT.into(),
             },
             decimals: f
                 .get_dict("PDFreeDecimals")
                 .map_err(err)?
-                .map(|v| v.as_int().unwrap_or(2).clamp(0, 12) as u8)
-                .unwrap_or(2),
+                .map(|v| {
+                    v.as_int()
+                        .unwrap_or(crate::constants::DEFAULT_DECIMALS as i32)
+                        .clamp(0, crate::constants::MAX_DECIMALS as i32) as u8
+                })
+                .unwrap_or(crate::constants::DEFAULT_DECIMALS),
         };
         let mut export_value = "Yes".to_string();
         if let Some(ap) = o.get_dict("AP").map_err(err)?
             && let Some(states) = ap.get_dict("N").map_err(err)?
             && states.is_dict().map_err(err)?
         {
-            for i in 0..states.dict_len().map_err(err)?.min(64) {
+            for i in 0..states
+                .dict_len()
+                .map_err(err)?
+                .min(crate::constants::MAX_APPEARANCE_STATES)
+            {
                 let k = states
                     .get_dict_key(i as i32)
                     .map_err(err)?
@@ -1092,7 +1112,7 @@ pub(crate) fn apply(doc: &mut PdfDocument, edit: &FormEdit) -> Result<usize> {
             if !permissions(doc).contains(Permission::MODIFY | Permission::ANNOTATE) {
                 return Err("This PDF does not permit creating form fields.".into());
             }
-            if specs.is_empty() || specs.len() > 2_000 {
+            if specs.is_empty() || specs.len() > crate::constants::MAX_CREATE_FIELDS {
                 return Err("Create 1–2,000 fields per operation.".into());
             }
             let mut names = HashSet::new();
@@ -1398,7 +1418,11 @@ fn appearances(doc: &PdfDocument, id: FieldRef) -> Result<Vec<(Vec<u8>, Vec<u8>)
         return Ok(vec![(vec![], normal.read_stream().map_err(err)?)]);
     }
     let mut streams = vec![];
-    for i in 0..normal.dict_len().map_err(err)?.min(64) {
+    for i in 0..normal
+        .dict_len()
+        .map_err(err)?
+        .min(crate::constants::MAX_APPEARANCE_STATES)
+    {
         let key = normal
             .get_dict_key(i as i32)
             .map_err(err)?

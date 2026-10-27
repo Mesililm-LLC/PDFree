@@ -5,5 +5,6 @@
 /benchmarks/runs/
 /tests/corpus/downloads/
 /*.log
+/logs/
 __pycache__/
 *.pdf
