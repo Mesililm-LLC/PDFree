@@ -1,11 +1,13 @@
 use crate::{DocumentInfo, EngineError, Event, FileAction, FileCommandAction, Shared, raster};
+use crate::backend::{open_document, DocumentBackend, PageBackend, DisplayListBackend, mupdf::MupdfDocument};
 use crossbeam_channel::{Receiver, Sender, bounded};
 use mupdf::{
-    DisplayList, Document,
+    Document, Page,
     pdf::{PdfDocument, Permission},
 };
 use std::{
     collections::{HashMap, HashSet},
+    path::{Path, PathBuf},
     sync::{Arc, atomic::Ordering},
     thread,
     time::{Duration, Instant},
@@ -15,7 +17,7 @@ use viewer_core::{PageSize, PixelTile, RenderQueue, RenderRequest};
 struct Job {
     content: u64,
     request: RenderRequest,
-    list: Arc<DisplayList>,
+    list: Arc<dyn DisplayListBackend>,
     thumbnail: bool,
 }
 struct Completed {
@@ -28,7 +30,7 @@ struct Completed {
 
 fn emit(shared: &Shared, events: &Sender<Event>, mut event: Event) -> bool {
     loop {
-        match events.send_timeout(event, Duration::from_millis(10)) {
+        match events.send_timeout(event, Duration::from_millis(crate::constants::CHANNEL_SEND_TIMEOUT_MILLIS)) {
             Ok(()) => return true,
             Err(crossbeam_channel::SendTimeoutError::Timeout(value)) => {
                 if shared.stopping.load(Ordering::Acquire) {
@@ -87,6 +89,7 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
     drop(completed);
     drop(job_rx);
     let mut document: Option<PdfDocument> = None;
+    let mut backend: Option<Box<dyn DocumentBackend>> = None;
     let mut detection: Option<crate::detection::Detection> = None;
     let mut detection_done: Option<(u64, usize, Vec<usize>)> = None;
     let mut can_copy = false;
@@ -105,10 +108,10 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
     let mut document_id = 0;
     let mut geometry: Vec<Option<PageSize>> = Vec::new();
     let mut cursor = 0;
-    let mut lists: HashMap<usize, Arc<DisplayList>> = HashMap::new();
+    let mut lists: HashMap<usize, Arc<dyn DisplayListBackend>> = HashMap::new();
     let mut inflight = HashSet::new();
     let mut deferred_results = std::collections::VecDeque::new();
-    let mut queue = RenderQueue::new(128);
+    let mut queue = RenderQueue::new(crate::constants::RENDER_QUEUE_CAPACITY);
 
     while !shared.stopping.load(Ordering::Acquire) {
         let desired = {
@@ -164,7 +167,7 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                 let count = doc
                     .page_count()
                     .map_err(|e| EngineError::InvalidDocument(e.to_string()))?;
-                if count <= 0 || count > 1_000_000 {
+                if count <= 0 || count > crate::constants::MAX_PAGES {
                     return Err(EngineError::InvalidDocument(
                         "Page count must be between 1 and 1,000,000".into(),
                     ));
@@ -201,6 +204,10 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                     geometry[0] = Some(info.first_page);
                     cursor = 1;
                     document = Some(doc);
+                    // Create the backend trait abstraction for the opened document.
+                    if let Ok(b) = open_document(&open.path, open.password.as_deref()) {
+                        backend = Some(b);
+                    }
                     emit(
                         &shared,
                         &events,
@@ -740,7 +747,7 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
             let pages: Vec<_> = pages
                 .into_iter()
                 .filter(|p| *p < geometry.len())
-                .take(16)
+                .take(crate::constants::MAX_NOTES_PAGES)
                 .collect();
             annotation_cache.retain(|p, _| pages.contains(p));
             annotation_queue = pages.into();
@@ -751,7 +758,7 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
             let pages: Vec<_> = pages
                 .into_iter()
                 .filter(|p| *p < geometry.len())
-                .take(16)
+                .take(crate::constants::MAX_NOTES_PAGES)
                 .collect();
             notes_cache.retain(|p, _| pages.contains(p));
             notes_queue = pages.into();
@@ -1088,7 +1095,9 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                                     },
                                 );
                             }
-                            entry.insert(Arc::new(list));
+                            entry.insert(Arc::new(Box::new(
+                                crate::backend::mupdf::MupdfDisplayList { list }
+                            ) as Arc<dyn DisplayListBackend>));
                             emit(
                                 &shared,
                                 &events,
@@ -1145,11 +1154,11 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                 }
                 let result = doc.load_page(page as i32).and_then(|p| {
                     let bounds = p.bounds()?;
-                    let scale = (140.0 / bounds.width())
-                        .min(160.0 / bounds.height())
-                        .min(1.0);
-                    let scale_milli = (scale * 1000.0).floor().max(1.0) as u32;
-                    let scale = scale_milli as f32 / 1000.0;
+                    let scale = (crate::constants::THUMBNAIL_WIDTH_SCALE / bounds.width())
+                        .min(crate::constants::THUMBNAIL_HEIGHT_SCALE / bounds.height())
+                        .min(crate::constants::THUMBNAIL_SCALE_MIN);
+                    let scale_milli = (scale * crate::constants::SCALE_MILLI_FACTOR).floor().max(crate::constants::THUMBNAIL_SCALE_MIN) as u32;
+                    let scale = scale_milli as f32 / crate::constants::SCALE_MILLI_FACTOR;
                     let key = viewer_core::TileKey {
                         document: document_id,
                         page,
@@ -1157,8 +1166,8 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                         rotation: 0,
                         x: 0,
                         y: 0,
-                        width: (bounds.width() * scale).ceil().clamp(1.0, 140.0) as u32,
-                        height: (bounds.height() * scale).ceil().clamp(1.0, 160.0) as u32,
+                        width: (bounds.width() * scale).ceil().clamp(crate::constants::THUMBNAIL_SCALE_MIN, crate::constants::THUMBNAIL_WIDTH_MAX) as u32,
+                        height: (bounds.height() * scale).ceil().clamp(crate::constants::THUMBNAIL_SCALE_MIN, crate::constants::THUMBNAIL_HEIGHT_MAX) as u32,
                     };
                     Ok((key, p.to_display_list(true)?))
                 });
@@ -1167,13 +1176,15 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                         let request = RenderRequest {
                             key,
                             generation: 0,
-                            priority: u32::MAX,
+                            priority: crate::constants::THUMBNAIL_PRIORITY,
                         };
                         inflight.insert((key, 0, true, content));
+                        let backend_list: Box<dyn DisplayListBackend> =
+                            Box::new(crate::backend::mupdf::MupdfDisplayList { list });
                         let _ = jobs.send(Job {
                             content,
                             request,
-                            list: Arc::new(list),
+                            list: Arc::new(backend_list),
                             thumbnail: true,
                         });
                     }
@@ -1222,7 +1233,7 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
                 cursor += 1;
             }
         }
-        let _ = wake.recv_timeout(Duration::from_millis(2));
+        let _ = wake.recv_timeout(Duration::from_millis(crate::constants::WAKE_RECV_TIMEOUT_MILLIS));
     }
     drop(jobs);
     // Dropping the receiver releases workers even if shutdown finds completed tiles queued.
@@ -1233,3 +1244,6 @@ pub(super) fn run(shared: Arc<Shared>, wake: Receiver<()>, events: Sender<Event>
     drop(lists);
     drop(document);
 }
+
+
+

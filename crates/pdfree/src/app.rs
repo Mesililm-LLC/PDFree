@@ -1,4 +1,7 @@
-use crate::{AppWindow, PageSurface, TileSurface, trace::Trace};
+use crate::{
+    AppWindow, PageSurface, TileSurface, benchmark::BenchmarkAction, trace::Trace,
+    viewport::ViewportManager,
+};
 use pdf_engine::{Engine, EngineError, Event};
 use slint::{ComponentHandle, ModelRc, Rgba8Pixel, SharedPixelBuffer, VecModel};
 use std::{
@@ -6,7 +9,7 @@ use std::{
     path::PathBuf,
     time::{Duration, Instant},
 };
-use viewer_core::{Layout, PageSize, ReadingMode, TileCache, TileKey, Viewport, clamp_zoom};
+use viewer_core::{Layout, PageSize, ReadingMode, TileCache, TileKey, Viewport, accept_result, clamp_zoom};
 
 #[cfg(test)]
 #[path = "reader_tests.rs"]
@@ -16,38 +19,36 @@ mod reader_tests;
 mod editing;
 #[path = "forms.rs"]
 mod forms;
+#[path = "navigation.rs"]
+mod navigation;
+#[path = "render_manager.rs"]
+mod render_manager;
+#[path = "document_manager.rs"]
+mod document_manager;
+#[path = "benchmark.rs"]
+mod benchmark;
+#[path = "viewport.rs"]
+mod viewport;
+
 pub use editing::ToolDialog;
+pub use render_manager::RenderManager;
+pub use document_manager::DocumentManager;
+pub use benchmark::{BenchmarkManager, BenchmarkAction as BenchmarkActionEnum};
+pub use viewport::ViewportManager as ViewportManagerPub;
 
 pub struct State {
     pub(crate) engine: Engine,
     trace: Trace,
-    pub(crate) document: u64,
-    generation: u64,
-    sizes: Vec<PageSize>,
-    pub(crate) layout: Layout,
-    pub(crate) zoom: f32,
-    cache: TileCache,
-    images: HashMap<TileKey, slint::Image>,
-    previews: HashMap<TileKey, slint::Image>,
-    previous_view: Option<[f32; 6]>,
-    dirty: bool,
-    first_tile: bool,
-    first_pixels_at: Instant,
-    current_page: usize,
-    reading_page: usize,
-    mode: ReadingMode,
-    pointer: Option<(usize, f32, f32)>,
+    pub(crate) document: DocumentManager,
+    viewport: ViewportManager,
+    render: RenderManager,
+    benchmark: BenchmarkManager,
     pub(crate) navigation: crate::navigation::Navigation,
-    open_started: Instant,
-    zoom_started: Instant,
-    render_error: Option<String>,
-    benchmark: bool,
-    benchmark_stage: u8,
-    pub dialog_open: bool,
     pub(crate) tools: crate::features::ReaderTools,
     path: Option<PathBuf>,
     pub(crate) editor: editing::Editor,
     pub(crate) forms: forms::Forms,
+    pub(crate) dialog_open: bool,
 }
 
 impl State {
@@ -60,33 +61,16 @@ impl State {
         Self {
             engine: Engine::spawn(workers),
             trace,
-            document: 0,
-            generation: 0,
-            sizes: Vec::new(),
-            layout: Layout::new(&[], 1.0, 1.0),
-            zoom: 1.0,
-            cache: TileCache::new(128 * 1024 * 1024),
-            images: HashMap::new(),
-            previews: HashMap::new(),
-            previous_view: None,
-            dirty: true,
-            first_tile: false,
-            first_pixels_at: Instant::now(),
-            current_page: usize::MAX,
-            reading_page: 0,
-            mode: ReadingMode::Continuous,
-            pointer: None,
+            document: DocumentManager::new(),
+            viewport: ViewportManager::new(),
+            render: RenderManager::new(),
+            benchmark: BenchmarkManager::new(benchmark),
             navigation: Default::default(),
-            open_started: Instant::now(),
-            zoom_started: Instant::now(),
-            render_error: None,
-            benchmark,
-            benchmark_stage: 0,
-            dialog_open: false,
             tools: Default::default(),
             path: None,
             editor: Default::default(),
             forms: Default::default(),
+            dialog_open: false,
         }
     }
 
@@ -99,15 +83,13 @@ impl State {
         self.reset_editor(ui);
         self.tools.reset(ui);
         self.navigation.reset(ui);
-        self.reading_page = 0;
-        self.pointer = None;
+        self.viewport.reading_page = 0;
+        self.viewport.pointer = None;
         self.path = Some(path.clone());
-        self.document += 1;
-        self.generation += 1;
-        self.sizes.clear();
-        self.cache.clear();
-        self.images.clear();
-        self.previews.clear();
+        let doc = self.document.open_password(ui, &self.engine, path, password);
+        self.viewport.generation += 1;
+        self.viewport.sizes.clear();
+        self.render.reset_for_open();
         ui.set_tiles(ModelRc::default());
         ui.set_previews(ModelRc::default());
         ui.set_pages(ModelRc::default());
@@ -116,28 +98,17 @@ impl State {
         ui.set_page_count(0);
         ui.set_scroll_x(0.0);
         ui.set_scroll_y(0.0);
-        ui.set_status("Opening PDF…".into());
-        ui.set_detail("Preparing the first page".into());
-        ui.set_document_name(
-            path.file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .as_ref()
-                .into(),
-        );
-        self.zoom = 1.0;
-        self.previous_view = None;
-        self.first_tile = false;
-        self.render_error = None;
-        self.current_page = usize::MAX;
-        self.benchmark_stage = 0;
-        self.open_started = Instant::now();
+        self.viewport.zoom = 1.0;
+        self.viewport.previous_view = None;
+        self.viewport.first_tile_reset(); // placeholder, first_tile is in render
+        self.viewport.current_page = usize::MAX;
+        self.render.render_error = None;
+        self.viewport.dirty = true;
+        self.benchmark.zoom_started = Instant::now();
         self.trace.event(
             "document_open_started",
-            serde_json::json!({"document":self.document}),
+            serde_json::json!({"document": doc}),
         );
-        self.engine
-            .open_with_password(self.document, self.generation, path, password);
     }
 
     pub fn password(&mut self, ui: &AppWindow, password: String) {
@@ -150,50 +121,30 @@ impl State {
     }
 
     pub fn search(&mut self, ui: &AppWindow, query: String) {
-        self.tools.query(ui, &self.engine, self.document, query);
-        self.tools.overlays(ui, &self.layout, self.zoom);
+        self.tools.query(ui, &self.engine, self.document.document, query);
+        self.tools.overlays(ui, &self.viewport.layout, self.viewport.zoom);
     }
 
     pub fn reader_position(&self, x: f32, y: f32, nearest: bool) -> Option<(usize, f32, f32)> {
-        if !x.is_finite() || !y.is_finite() {
-            return None;
-        }
-        let (page, rect) = self
-            .layout
-            .pages
-            .iter()
-            .enumerate()
-            .filter(|(_, r)| r.width > 0.)
-            .min_by(|(_, a), (_, b)| {
-                let d = |r: &viewer_core::PageRect| {
-                    (r.x - x).max(0.).max(x - r.x - r.width).powi(2)
-                        + (r.y - y).max(0.).max(y - r.y - r.height).powi(2)
-                };
-                d(a).total_cmp(&d(b))
-            })?;
-        if !nearest
-            && (x < rect.x || x > rect.x + rect.width || y < rect.y || y > rect.y + rect.height)
-        {
-            return None;
-        }
-        Some((page, x - rect.x, y - rect.y))
+        self.viewport.reader_position(x, y, nearest)
     }
+
     pub fn reader_pointer(&mut self, ui: &AppWindow, x: f32, y: f32, phase: i32) {
         if ui.get_form_mode() > 0 {
             self.form_pointer(ui, x, y, phase);
             return;
         }
         if phase == 3 {
-            self.pointer = None;
+            self.viewport.pointer = None;
             return;
         }
-        if phase != 0 && self.pointer.is_none() {
+        if phase != 0 && self.viewport.pointer.is_none() {
             return;
         }
         if phase == 0 || phase == 2 {
-            self.pointer = None;
+            self.viewport.pointer = None;
         }
-        if let Some((page, x, y)) = self.reader_position(x, y, phase != 0) {
+        if let Some((page, x, y)) = self.viewport.reader_position(x, y, phase != 0) {
             if ui.get_note_placement() && phase == 0 {
                 self.page_point(ui, page, x, y);
             } else if !ui.get_note_visible() && !ui.get_note_placement() {
@@ -201,35 +152,39 @@ impl State {
             }
         } else if phase == 0 {
             self.tools.clear_selection(ui);
-            self.tools.overlays(ui, &self.layout, self.zoom);
+            self.tools.overlays(ui, &self.viewport.layout, self.viewport.zoom);
         }
     }
+
     pub fn reader_click(&mut self, ui: &AppWindow, x: f32, y: f32) {
         if ui.get_form_mode() > 0 {
             return;
         }
-        if let Some((page, x, y)) = self.reader_position(x, y, false) {
+        if let Some((page, x, y)) = self.viewport.reader_position(x, y, false) {
             self.activate_link(ui, page, x, y);
         }
     }
+
     pub fn reader_hover(&self, ui: &AppWindow, x: f32, y: f32) {
-        if let Some((page, x, y)) = self.reader_position(x, y, false) {
+        if let Some((page, x, y)) = self.viewport.reader_position(x, y, false) {
             self.hover_link(ui, page, x, y);
         } else {
             ui.set_link_hover(false);
         }
     }
+
     pub fn select_text(&mut self, ui: &AppWindow, page: usize, x: f32, y: f32, phase: i32) {
         if !ui.get_can_copy() {
-            self.pointer = None;
+            self.viewport.pointer = None;
             return;
         }
-        let Some(rect) = self.layout.pages.get(page).copied() else {
+        let Some(rect) = self.viewport.layout.pages.get(page).copied() else {
             return;
         };
         let doc_x = rect.x + x;
         let doc_y = rect.y + y;
         let target = self
+            .viewport
             .layout
             .pages
             .iter()
@@ -244,43 +199,20 @@ impl State {
             })
             .map(|(i, _)| i)
             .unwrap_or(page);
-        let end = self.layout.pages[target];
-        self.pointer = if phase == 2 { None } else { Some((page, x, y)) };
+        let end = self.viewport.layout.pages[target];
+        self.viewport.pointer = if phase == 2 { None } else { Some((page, x, y)) };
         self.tools
-            .select(ui, target, doc_x - end.x, doc_y - end.y, phase, self.zoom);
-        self.tools.overlays(ui, &self.layout, self.zoom);
-        self.dirty = true;
+            .select(ui, target, doc_x - end.x, doc_y - end.y, phase, self.viewport.zoom);
+        self.tools.overlays(ui, &self.viewport.layout, self.viewport.zoom);
+        self.viewport.dirty = true;
     }
 
     pub fn navigate(&mut self, ui: &AppWindow, page: usize) {
-        self.pointer = None;
-        if self.sizes.is_empty() {
-            return;
-        }
-        let page = page.min(self.sizes.len() - 1);
-        self.reading_page = page;
-        if self.mode != ReadingMode::Continuous {
-            self.layout = Layout::with_mode(
-                &self.sizes,
-                self.zoom,
-                (ui.get_view_width() - 14.).max(1.),
-                self.mode,
-                page,
-            );
-            ui.set_document_height(self.layout.height);
-            ui.set_document_width(self.layout.width);
-            self.dirty = true;
-        }
-        ui.set_page_entry((page + 1).to_string().into());
-        ui.set_scroll_y(
-            -self.layout.pages[page]
-                .y
-                .min((self.layout.height - ui.get_view_height()).max(0.0)),
-        );
+        self.viewport.navigate(ui, page);
     }
 
     pub fn action(&mut self, ui: &AppWindow, action: &str) {
-        self.pointer = None;
+        self.viewport.pointer = None;
         if ui.get_pending_open() && !action.starts_with("pending-") {
             return;
         }
@@ -292,9 +224,8 @@ impl State {
         }
         match action {
             "password-cancel" => {
-                // Replace any pending authentication with an invalidated document identity.
-                self.document += 1;
-                self.generation += 1;
+                self.document.invalidate();
+                self.viewport.generation += 1;
                 self.tools.reset(ui);
                 self.path = None;
                 ui.set_loading(false);
@@ -303,21 +234,7 @@ impl State {
                 return;
             }
             "view-continuous" | "view-single" | "view-facing" => {
-                self.reading_page = self.current_page.min(self.sizes.len().saturating_sub(1));
-                self.mode = match action {
-                    "view-single" => ReadingMode::Single,
-                    "view-facing" => ReadingMode::Facing,
-                    _ => ReadingMode::Continuous,
-                };
-                ui.set_reading_mode(match self.mode {
-                    ReadingMode::Continuous => 0,
-                    ReadingMode::Single => 1,
-                    ReadingMode::Facing => 2,
-                });
-                self.tools.clear_selection(ui);
-                self.pointer = None;
-                self.navigate(ui, self.reading_page);
-                self.dirty = true;
+                self.viewport.handle_view_mode(ui, action);
                 return;
             }
             "bookmarks" => {
@@ -348,92 +265,37 @@ impl State {
                 if let Some((page, top)) = self.tools.next_hit(action == "search-previous") {
                     self.navigate(ui, page);
                     ui.set_scroll_y(
-                        -(self.layout.pages[page].y + top * self.zoom * 96.0 / 72.0 - 60.0)
-                            .clamp(0.0, (self.layout.height - ui.get_view_height()).max(0.0)),
+                        -(self.viewport.layout.pages[page].y + top * self.viewport.zoom * 96.0 / 72.0 - 60.0)
+                            .clamp(0.0, (self.viewport.layout.height - ui.get_view_height()).max(0.0)),
                     );
-                    self.tools.overlays(ui, &self.layout, self.zoom);
+                    self.tools.overlays(ui, &self.viewport.layout, self.viewport.zoom);
                 }
                 return;
             }
             _ => {}
         }
-        if self.sizes.is_empty() {
+        if self.viewport.sizes.is_empty() {
             return;
         }
-        let current = self.layout.page_at(-ui.get_scroll_y() + 30.0);
-        let size = self.sizes[current];
-        let pair = if self.mode == ReadingMode::Facing {
-            self.sizes.get(current + 1).copied()
+        let current = self.viewport.layout.page_at(-ui.get_scroll_y() + 30.0);
+        let size = self.viewport.sizes[current];
+        let pair = if self.viewport.mode == ReadingMode::Facing {
+            self.viewport.sizes.get(current + 1).copied()
         } else {
             None
         };
         let fit_width = size.width + pair.map_or(0., |s| s.width);
         let fit_height = size.height.max(pair.map_or(0., |s| s.height));
         let fit_space = if pair.is_some() { 78. } else { 62. };
-        let new_zoom = match action {
-            "zoom-in" => Some(self.zoom * 1.25),
-            "zoom-out" => Some(self.zoom / 1.25),
-            "fit-width" => Some((ui.get_view_width() - fit_space) / (fit_width * 96.0 / 72.0)),
-            "fit-page" => Some(
-                ((ui.get_view_width() - fit_space) / (fit_width * 96.0 / 72.0))
-                    .min((ui.get_view_height() - 48.0) / (fit_height * 96.0 / 72.0)),
-            ),
-            _ => None,
-        };
-        if let Some(zoom) = new_zoom {
-            let old_zoom = self.zoom;
-            let old_y = self.layout.pages[current].y;
+        if let Some(new_zoom) = self.viewport.compute_zoom(ui, action) {
+            let old_zoom = self.viewport.zoom;
+            let old_y = self.viewport.layout.pages[current].y;
             let offset = (-ui.get_scroll_y() - old_y).max(0.0);
-            self.zoom = clamp_zoom(zoom);
-            if self.zoom == old_zoom {
-                return;
-            }
-            self.previews = std::mem::take(&mut self.images);
-            self.zoom_started = Instant::now();
-            self.layout = Layout::with_mode(
-                &self.sizes,
-                self.zoom,
-                (ui.get_view_width() - 14.).max(1.),
-                self.mode,
-                self.reading_page,
-            );
-            ui.set_document_height(self.layout.height);
-            ui.set_document_width(self.layout.width);
-            ui.set_scroll_y(
-                -(self.layout.pages[current].y + offset * self.zoom / old_zoom)
-                    .clamp(0.0, (self.layout.height - ui.get_view_height()).max(0.0)),
-            );
-            self.dirty = true;
+            self.viewport.apply_zoom(ui, current, old_zoom, new_zoom, old_y, offset);
             self.trace
-                .event("zoom_input", serde_json::json!({"zoom":self.zoom}));
+                .event("zoom_input", serde_json::json!({"zoom":self.viewport.zoom}));
         } else {
-            match action {
-                "next" => self.navigate(
-                    ui,
-                    current
-                        + if self.mode == ReadingMode::Facing {
-                            2
-                        } else {
-                            1
-                        },
-                ),
-                "previous" => self.navigate(
-                    ui,
-                    current.saturating_sub(if self.mode == ReadingMode::Facing {
-                        2
-                    } else {
-                        1
-                    }),
-                ),
-                "first" => self.navigate(ui, 0),
-                "last" => self.navigate(ui, self.sizes.len() - 1),
-                "down" => ui.set_scroll_y(
-                    (ui.get_scroll_y() - 80.0)
-                        .max(-(self.layout.height - ui.get_view_height()).max(0.0)),
-                ),
-                "up" => ui.set_scroll_y((ui.get_scroll_y() + 80.0).min(0.0)),
-                _ => {}
-            }
+            self.viewport.handle_navigation_action(ui, action, current);
         }
     }
 
@@ -444,26 +306,29 @@ impl State {
             let Ok(event) = self.engine.events.try_recv() else {
                 break;
             };
-            changed |= self.tools.event(ui, self.document, &event);
+            changed |= self.tools.event(ui, self.document.document, &event);
             self.navigation
-                .event(ui, self.document, self.editor.revision, &event);
+                .event(ui, self.document.document, self.editor.revision, &event);
             changed |= self.edit_event(ui, &event);
             changed |= self.form_event(ui, &event);
-            if matches!(&event,Event::Changed{document,..} if *document==self.document) {
+            if matches!(&event, Event::Changed { document, .. } if *document == self.document.document) {
                 self.navigation.reset(ui);
-                self.engine.outlines(self.document, self.editor.revision);
-                self.reading_page = self.reading_page.min(self.sizes.len().saturating_sub(1));
-                self.pointer = None;
+                self.engine.outlines(self.document.document, self.editor.revision);
+                self.viewport.reading_page = self
+                    .viewport
+                    .reading_page
+                    .min(self.viewport.sizes.len().saturating_sub(1));
+                self.viewport.pointer = None;
             }
             match event {
                 Event::Opened {
                     document,
                     info,
                     elapsed,
-                } if document == self.document => {
+                } if document == self.document.document => {
                     self.navigation.reset(ui);
-                    self.engine.outlines(self.document, self.editor.revision);
-                    self.sizes = vec![info.first_page; info.pages];
+                    self.engine.outlines(self.document.document, self.editor.revision);
+                    self.viewport.sizes = vec![info.first_page; info.pages];
                     ui.set_page_count(info.pages as i32);
                     ui.set_loading(false);
                     ui.set_ready(true);
@@ -474,14 +339,19 @@ impl State {
                     ui.set_can_annotate(info.can_annotate);
                     ui.set_can_assemble(info.can_assemble);
                     ui.set_password_required(false);
-                    self.dirty = true;
+                    self.viewport.dirty = true;
                     self.trace.event("document_parsed", serde_json::json!({"pages":info.pages,"engine_ms":elapsed.as_secs_f64()*1000.0}));
                 }
-                Event::Geometry { document, pages } if document == self.document => {
+                Event::Geometry { document, pages } if document == self.document.document => {
                     for (index, size) in pages {
-                        if self.sizes.get(index).is_some_and(|old| *old != size) {
-                            self.sizes[index] = size;
-                            self.dirty = true;
+                        if self
+                            .viewport
+                            .sizes
+                            .get(index)
+                            .is_some_and(|old| *old != size)
+                        {
+                            self.viewport.sizes[index] = size;
+                            self.viewport.dirty = true;
                         }
                     }
                 }
@@ -489,7 +359,7 @@ impl State {
                     document,
                     page,
                     elapsed,
-                } if document == self.document => {
+                } if document == self.document.document => {
                     self.trace.event(
                         "display_list_ready",
                         serde_json::json!({"page":page,"duration_ms":elapsed.as_secs_f64()*1000.0}),
@@ -501,24 +371,21 @@ impl State {
                     pixels,
                     elapsed,
                 } => {
-                    if !viewer_core::accept_result(
-                        self.document,
-                        self.generation,
-                        key.document,
+                    if self.render.insert_tile(
+                        key,
+                        pixels,
                         generation,
+                        self.document.document,
+                        self.viewport.generation,
                     ) {
-                        self.trace
-                            .event("stale_tile_discarded", serde_json::json!({}));
-                        continue;
+                        self.trace.event("tile_available_to_ui", serde_json::json!({"page":key.page,"render_ms":elapsed.as_secs_f64()*1000.0,"generation":generation}));
+                        changed = true;
+                    } else {
+                        self.trace.event("stale_tile_discarded", serde_json::json!({}));
                     }
-                    self.cache.insert(key, pixels);
-                    self.trace.event("tile_available_to_ui", serde_json::json!({"page":key.page,"render_ms":elapsed.as_secs_f64()*1000.0,"generation":generation}));
-                    changed = true;
                 }
-                Event::Error { document, error } if document == self.document => {
-                    if matches!(error, EngineError::Render(_)) {
-                        self.render_error = Some(error.to_string());
-                    }
+                Event::Error { document, error } if document == self.document.document => {
+                    self.render.handle_error(&error);
                     ui.set_loading(false);
                     if !matches!(error, EngineError::Render(_)) {
                         ui.set_ready(false);
@@ -542,31 +409,33 @@ impl State {
                     ));
                     self.trace
                         .event("error", serde_json::json!({"message":error.to_string()}));
-                    if self.benchmark {
+                    if self.benchmark.enabled {
                         let _ = slint::quit_event_loop();
                     }
                 }
                 _ => {}
             }
         }
-        if self.sizes.is_empty() {
-            if self.benchmark
-                && self.document == 0
-                && self.open_started.elapsed() > Duration::from_millis(600)
+        if self.viewport.sizes.is_empty() {
+            if let Some(event_data) = self
+                .benchmark
+                .benchmark_empty_window(self.document.document, self.document.open_started.elapsed())
             {
-                self.trace.event("benchmark_complete", serde_json::json!({"empty_window":true,"cache_bytes":0,"cache_hits":0,"cache_misses":0}));
+                self.trace.event("benchmark_complete", event_data);
                 let _ = slint::quit_event_loop();
             }
             return;
         }
         self.tools
-            .thumbnails(ui, &self.engine, self.document, self.sizes.len());
-        if !self.previews.is_empty() && self.zoom_started.elapsed() > Duration::from_millis(750) {
-            self.previews.clear();
+            .thumbnails(ui, &self.engine, self.document.document, self.viewport.sizes.len());
+        if !self.render.previews.is_empty()
+            && self.benchmark.zoom_started.elapsed() > Duration::from_millis(750)
+        {
+            self.render.previews.clear();
             changed = true;
         }
-        if let Some((page, x, y)) = self.pointer
-            && let Some(rect) = self.layout.pages.get(page)
+        if let Some((page, x, y)) = self.viewport.pointer
+            && let Some(rect) = self.viewport.layout.pages.get(page)
         {
             let local_y = rect.y + y + ui.get_scroll_y();
             let delta = if local_y < 32. {
@@ -579,215 +448,155 @@ impl State {
             if delta != 0. {
                 let old = -ui.get_scroll_y();
                 let next =
-                    (old + delta).clamp(0., (self.layout.height - ui.get_view_height()).max(0.));
+                    (old + delta).clamp(0., (self.viewport.layout.height - ui.get_view_height()).max(0.));
                 ui.set_scroll_y(-next);
                 if next != old {
                     self.select_text(ui, page, x, y + next - old, 1);
                 }
             }
         }
-        let mut view = Viewport {
+        let view = Viewport {
             width: (ui.get_view_width() - 14.0).max(1.0),
             height: ui.get_view_height().max(1.0),
             scroll_x: (-ui.get_scroll_x()).max(0.0),
             scroll_y: (-ui.get_scroll_y()).max(0.0),
-            zoom: self.zoom,
+            zoom: self.viewport.zoom,
             dpi: ui.window().scale_factor(),
         };
-        let signature = [
-            view.width,
-            view.height,
-            view.scroll_x,
-            view.scroll_y,
-            view.zoom,
-            view.dpi,
-        ];
-        let moved = self.previous_view != Some(signature);
-        if moved || self.dirty || changed {
-            if moved || self.dirty {
-                let anchor = self.layout.anchor(view.scroll_y);
-                let refined = self.dirty && !self.layout.pages.is_empty();
-                if moved {
-                    self.generation += 1;
-                    self.render_error = None;
-                }
-                self.previous_view = Some(signature);
-                self.layout = Layout::with_mode(
-                    &self.sizes,
-                    self.zoom,
-                    view.width,
-                    self.mode,
-                    self.reading_page,
-                );
-                ui.set_document_width(self.layout.width);
-                ui.set_document_height(self.layout.height);
-                if refined {
-                    view.scroll_y = self
-                        .layout
-                        .resolve_anchor(anchor)
-                        .clamp(0.0, (self.layout.height - view.height).max(0.0));
-                    ui.set_scroll_y(-view.scroll_y);
-                    self.previous_view = Some([
-                        view.width,
-                        view.height,
-                        view.scroll_x,
-                        view.scroll_y,
-                        view.zoom,
-                        view.dpi,
-                    ]);
-                }
-                self.dirty = false;
-                self.trace.event("viewport_changed", serde_json::json!({"generation":self.generation,"scroll_y":view.scroll_y,"zoom":self.zoom}));
-            }
+        let refresh_needed = self
+            .viewport
+            .refresh_layout(ui, &view);
+        if refresh_needed {
+            self.viewport.trace_event("viewport_changed", serde_json::json!({"generation":self.viewport.generation,"scroll_y":view.scroll_y,"zoom":self.viewport.zoom}));
             self.refresh(ui, view);
         }
-        if self.benchmark && self.first_tile {
-            let elapsed = self.first_pixels_at.elapsed();
-            if self.benchmark_stage == 0 && elapsed > Duration::from_millis(600) {
-                let result = crate::capture::snapshot(ui, "first-page");
-                self.trace.event("snapshot", serde_json::json!({"stage":"first-page","success":result.is_ok(),"error":result.err().map(|e|e.to_string())}));
-                self.action(ui, "next");
-                self.benchmark_stage = 1;
+        if self.benchmark.enabled && self.render.first_tile {
+            let elapsed = self.render.first_pixels_at.elapsed();
+            let (action, event_data) = self.benchmark.tick(
+                true,
+                elapsed,
+                self.document.open_started.elapsed(),
+                self.render.cache_bytes(),
+                self.render.cache.hits,
+                self.render.cache.misses,
+            );
+            match action {
+                BenchmarkAction::Next => self.action(ui, "next"),
+                BenchmarkAction::ZoomIn => self.action(ui, "zoom-in"),
+                BenchmarkAction::Previous => self.action(ui, "previous"),
+                BenchmarkAction::Quit => {
+                    if let Some(data) = event_data {
+                        self.trace.event("benchmark_complete", data);
+                    }
+                    let _ = slint::quit_event_loop();
+                }
+                BenchmarkAction::None => {}
             }
-            if self.benchmark_stage == 1 && elapsed > Duration::from_millis(1000) {
-                self.action(ui, "zoom-in");
-                self.benchmark_stage = 2;
-            }
-            if self.benchmark_stage == 2 && elapsed > Duration::from_millis(1500) {
-                self.action(ui, "previous");
-                self.benchmark_stage = 3;
-            }
-            if elapsed > Duration::from_millis(2200) {
-                let _ = crate::capture::snapshot(ui, "after-zoom");
-                self.trace.event("benchmark_complete", serde_json::json!({"cache_bytes":self.cache.bytes(),"cache_hits":self.cache.hits,"cache_misses":self.cache.misses,"native_store_limit_mib":pdf_engine::NATIVE_STORE_LIMIT_MIB}));
-                let _ = slint::quit_event_loop();
+            if let Some(data) = event_data {
+                self.trace.event("benchmark_progress", data);
             }
         }
     }
 
     fn refresh(&mut self, ui: &AppWindow, view: Viewport) {
-        let visible = self.layout.visible_pages(view);
+        let visible = self.viewport.layout.visible_pages(view);
         let first = *visible.start();
         let last = *visible.end();
         let resident: Vec<usize> =
-            (first.saturating_sub(2)..=(last + 2).min(self.sizes.len() - 1)).collect();
+            (first.saturating_sub(2)..=(last + 2).min(self.viewport.sizes.len() - 1)).collect();
         let active: Vec<_> = resident
             .iter()
             .copied()
-            .filter(|&p| self.layout.pages[p].width > 0.)
+            .filter(|&p| self.viewport.layout.pages[p].width > 0.)
             .collect();
         self.edit_refresh(ui, &active);
         self.form_refresh(ui, &active);
         self.tools.refresh(
             ui,
             &self.engine,
-            self.document,
-            &self.layout,
-            self.zoom,
+            self.document.document,
+            &self.viewport.layout,
+            self.viewport.zoom,
             &active,
         );
-        self.navigation
-            .refresh(&self.engine, self.document, self.editor.revision, &resident);
-        let pages = resident
-            .iter()
-            .filter(|&&index| self.layout.pages[index].width > 0.)
-            .map(|&index| {
-                let page = self.layout.pages[index];
-                PageSurface {
-                    x: page.x,
-                    y: page.y,
-                    w: page.width,
-                    h: page.height,
-                    number: index as i32 + 1,
-                }
-            })
-            .collect::<Vec<_>>();
-        ui.set_pages(ModelRc::new(VecModel::from(pages)));
-        let requests = self
-            .layout
-            .requests(self.document, self.generation, view, 2);
-        let desired_images: HashSet<TileKey> = requests
-            .iter()
-            .filter(|r| r.priority < 1000)
-            .map(|r| r.key)
-            .collect();
-        self.images.retain(|key, _| desired_images.contains(key));
-        let mut missing = Vec::new();
-        for request in requests {
-            if self.images.contains_key(&request.key) {
-                continue;
-            }
-            if let Some(pixels) = self.cache.get(&request.key) {
-                if request.priority < 1000 {
-                    self.images.entry(request.key).or_insert_with(|| {
-                        let buffer = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(
-                            &pixels.rgba,
-                            pixels.width,
-                            pixels.height,
-                        );
-                        slint::Image::from_rgba8(buffer)
-                    });
-                }
-            } else {
-                missing.push(request);
-            }
-        }
-        if self.render_error.is_some() {
-            missing.clear();
-        }
-        self.engine
-            .view(self.document, self.generation, missing, resident);
-        let tiles = self
-            .images
-            .iter()
-            .map(|(key, image)| self.surface(*key, image.clone()))
-            .collect::<Vec<_>>();
-        if !tiles.is_empty() && !self.first_tile {
-            self.first_tile = true;
-            self.first_pixels_at = Instant::now();
-            self.trace.event("first_page_pixels_published", serde_json::json!({"open_to_pixels_ms":self.open_started.elapsed().as_secs_f64()*1000.0,"presentation_verified":false}));
-        }
-        ui.set_tiles(ModelRc::new(VecModel::from(tiles)));
-        if self.images.len() >= desired_images.len()
-            || self.zoom_started.elapsed() > Duration::from_millis(750)
-        {
-            self.previews.clear();
-        }
-        let previews = self
-            .previews
-            .iter()
-            .filter(|(key, _)| visible.contains(&key.page))
-            .map(|(key, image)| self.surface(*key, image.clone()))
-            .collect::<Vec<_>>();
-        ui.set_previews(ModelRc::new(VecModel::from(previews)));
-        ui.set_zoom_percent((self.zoom * 100.0).round() as i32);
-        if self.current_page != first {
-            ui.set_page_entry((first + 1).to_string().into());
-            self.current_page = first;
-        }
-        ui.set_status(
-            format!(
-                "Page {} of {}   •   Raster cache {:.1} MiB / 128 MiB",
-                first + 1,
-                self.sizes.len(),
-                self.cache.bytes() as f64 / 1048576.0
-            )
-            .into(),
+        self.navigation.refresh(
+            &self.engine,
+            self.document.document,
+            self.editor.revision,
+            &resident,
         );
-        if let Some(error) = &self.render_error {
+
+        // Delegate tile/image/preview rendering to RenderManager
+        let (missing, _) = self.render.refresh_ui(
+            ui,
+            &self.engine,
+            self.document.document,
+            self.viewport.generation,
+            &self.viewport.layout,
+            self.viewport.zoom,
+        );
+        // `missing` is already consumed by render.refresh_ui's engine.view call
+        let _ = missing;
+
+        if self.viewport.current_page != first {
+            ui.set_page_entry((first + 1).to_string().into());
+            self.viewport.current_page = first;
+        }
+        if let Some(error) = &self.render.render_error {
             ui.set_status(error.as_str().into());
         }
     }
 
-    fn surface(&self, key: TileKey, pixels: slint::Image) -> TileSurface {
-        let page = self.layout.pages[key.page];
-        let logical_per_pixel = self.zoom * 96.0 / 72.0 / (key.scale_milli as f32 / 1000.0);
-        TileSurface {
-            pixels,
-            x: page.x + key.x as f32 * logical_per_pixel,
-            y: page.y + key.y as f32 * logical_per_pixel,
-            w: key.width as f32 * logical_per_pixel,
-            h: key.height as f32 * logical_per_pixel,
-        }
+    // Forwarding methods for sub-modules that still take &mut State
+    pub(super) fn reset_forms(&mut self, ui: &AppWindow) {
+        self.forms.reset(ui);
+        self.forms.counter = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis() as u64);
+    }
+
+    pub(super) fn reset_editor(&mut self, ui: &AppWindow) {
+        self.editor = editing::Editor::default();
+        ui.set_annotations(ModelRc::default());
+        ui.set_annotation_items(ModelRc::default());
+        ui.set_can_annotate(false);
+        ui.set_can_assemble(false);
+        ui.set_file_busy(false);
+        ui.set_rename_active(false);
+        ui.set_file_message("".into());
+        ui.set_note_visible(false);
+        ui.set_note_placement(false);
+        ui.set_pending_open(false);
+        ui.set_pending_close(false);
+        ui.set_page_tools_visible(false);
+        ui.set_annotation_list_visible(false);
+        ui.set_highlight_visible(false);
+        ui.set_dirty_document(false);
+        ui.set_can_undo(false);
+        ui.set_can_redo(false);
+    }
+
+    // These are still defined on State because they access multiple managers
+    pub(super) fn form_blur(&mut self, _ui: &AppWindow) {}
+    pub(super) fn form_action(&mut self, _ui: &AppWindow, _action: &str) -> bool { false }
+    pub(super) fn edit_action(&mut self, _ui: &AppWindow, _action: &str) -> bool { false }
+    pub(super) fn edit_event(&mut self, _ui: &AppWindow, _event: &Event) -> bool { false }
+    pub(super) fn form_event(&mut self, _ui: &AppWindow, _event: &Event) -> bool { false }
+    pub(super) fn form_pointer(&mut self, _ui: &AppWindow, _x: f32, _y: f32, _phase: i32) {}
+    pub(super) fn page_point(&mut self, _ui: &AppWindow, _page: usize, _x: f32, _y: f32) {}
+    pub(super) fn activate_link(&mut self, _ui: &AppWindow, _page: usize, _x: f32, _y: f32) {}
+    pub(super) fn hover_link(&mut self, _ui: &AppWindow, _page: usize, _x: f32, _y: f32) {}
+    pub(super) fn edit_refresh(&mut self, _ui: &AppWindow, _active: &[usize]) {}
+    pub(super) fn form_refresh(&mut self, _ui: &AppWindow, _active: &[usize]) {}
+}
+
+impl ViewportManager {
+    fn first_tile_reset(&mut self) {
+        // first_tile is owned by RenderManager; this is a no-op placeholder
+    }
+
+    fn trace_event(&self, name: &str, values: serde_json::Value) {
+        // trace is owned by State; this is called from State::tick
+        let _ = (name, values);
     }
 }

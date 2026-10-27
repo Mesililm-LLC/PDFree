@@ -28,14 +28,14 @@ struct Search {
 
 impl Reader {
     pub fn text_pages(&mut self, pages: Vec<usize>, count: usize) {
-        let pages: Vec<_> = pages.into_iter().filter(|p| *p < count).take(16).collect();
+        let pages: Vec<_> = pages.into_iter().filter(|p| *p < count).take(crate::constants::MAX_TEXT_PAGES).collect();
         self.text_cache.retain(|p, _| pages.contains(p));
         // Every latest-value command republishes its wanted snapshots. A leave/reenter
         // transition may have been coalesced away after the UI dropped its reference.
         self.text = pages.into();
     }
     pub fn thumbnails(&mut self, pages: Vec<usize>, count: usize) {
-        self.thumbnail_wanted = pages.into_iter().filter(|p| *p < count).take(32).collect();
+        self.thumbnail_wanted = pages.into_iter().filter(|p| *p < count).take(crate::constants::MAX_THUMBNAIL_PAGES).collect();
         self.thumbnail_cache
             .retain(|p, _| self.thumbnail_wanted.contains(p));
         self.thumbnails = self.thumbnail_wanted.iter().copied().collect();
@@ -63,7 +63,7 @@ impl Reader {
         Some(pixels)
     }
     pub fn search(&mut self, id: u64, mut query: String) {
-        if query.len() > 512 || query.contains('\0') {
+        if query.len() > crate::constants::MAX_SEARCH_QUERY_CHARS || query.contains('\0') {
             query.clear();
         }
         self.search = Some(Search {

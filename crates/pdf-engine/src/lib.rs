@@ -1,4 +1,6 @@
 //! MuPDF ownership and background rendering boundary.
+mod backend;
+mod constants;
 mod coordinator;
 mod detection;
 mod digital_signatures;
@@ -412,23 +414,23 @@ impl Engine {
     }
     pub fn form_pages(&self, document: u64, revision: u64, pages: Vec<usize>) {
         self.shared.desired.lock().unwrap().forms =
-            Some((document, revision, pages.into_iter().take(16).collect()));
+            Some((document, revision, pages.into_iter().take(crate::constants::MAX_FORM_PAGES).collect()));
         let _ = self.wake.try_send(());
     }
     pub fn links_pages(&self, document: u64, revision: u64, pages: Vec<usize>) {
         self.shared.desired.lock().unwrap().links =
-            Some((document, revision, pages.into_iter().take(16).collect()));
+            Some((document, revision, pages.into_iter().take(crate::constants::MAX_LINK_PAGES).collect()));
         let _ = self.wake.try_send(());
     }
     pub fn text_pages(&self, document: u64, pages: Vec<usize>) {
         self.shared.desired.lock().unwrap().text =
-            Some((document, pages.into_iter().take(16).collect()));
+            Some((document, pages.into_iter().take(crate::constants::MAX_TEXT_PAGES).collect()));
         let _ = self.wake.try_send(());
     }
 
     pub fn note_pages(&self, document: u64, pages: Vec<usize>) {
         self.shared.desired.lock().unwrap().notes =
-            Some((document, pages.into_iter().take(16).collect()));
+            Some((document, pages.into_iter().take(crate::constants::MAX_NOTES_PAGES).collect()));
         let _ = self.wake.try_send(());
     }
     fn file(&self, command: FileCommand) -> bool {
@@ -594,13 +596,13 @@ impl Engine {
 
     pub fn thumbnails(&self, document: u64, pages: Vec<usize>) {
         self.shared.desired.lock().unwrap().thumbnails =
-            Some((document, pages.into_iter().take(32).collect()));
+            Some((document, pages.into_iter().take(crate::constants::MAX_THUMBNAIL_PAGES).collect()));
         let _ = self.wake.try_send(());
     }
 
     pub fn search(&self, document: u64, search: u64, query: impl Into<String>) {
         let mut query = query.into();
-        if query.len() > 512 || query.contains('\0') {
+        if query.len() > crate::constants::MAX_SEARCH_QUERY_CHARS || query.contains('\0') {
             query.clear();
         }
         self.shared.search.store(search, Ordering::Release);

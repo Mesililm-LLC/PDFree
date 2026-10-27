@@ -31,7 +31,7 @@ pub(crate) fn options() -> PdfWriteOptions {
     options
 }
 pub(crate) fn apply(doc: &PdfDocument, annotations: &[Annotation]) -> Result<(), String> {
-    if annotations.len() > 2_000 {
+    if annotations.len() > crate::constants::MAX_CREATE_FIELDS {
         return Err("Too many annotations (maximum 2,000)".into());
     }
     if !annotations.is_empty() && !crate::forms::permissions(doc).contains(Permission::ANNOTATE) {
@@ -362,7 +362,7 @@ pub(crate) fn save(
     current: impl Fn() -> bool,
 ) -> Result<PathBuf, String> {
     crate::forms::ensure_writable(doc)?;
-    if annotations.len() > 2_000 {
+    if annotations.len() > crate::constants::MAX_CREATE_FIELDS {
         return Err("Too many annotations (maximum 2,000)".into());
     }
     for annotation in annotations {

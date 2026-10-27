@@ -14,7 +14,7 @@ impl Navigation {
         self.outlines = true;
     }
     pub fn request_links(&mut self, pages: Vec<usize>, count: usize) {
-        self.pages = pages.into_iter().filter(|p| *p < count).take(16).collect();
+        self.pages = pages.into_iter().filter(|p| *p < count).take(crate::constants::MAX_LINK_PAGES).collect();
     }
     pub fn tick(
         &mut self,
@@ -84,13 +84,13 @@ fn destination(
             };
         }
     }
-    if uri.len() <= 8192 && !uri.chars().any(char::is_control) {
+    if uri.len() <= crate::constants::MAX_URI_CHARS && !uri.chars().any(char::is_control) {
         let lower = uri.to_ascii_lowercase();
         if lower.starts_with("http://") || lower.starts_with("https://") {
             return LinkDestination::External(uri.into());
         }
     }
-    LinkDestination::Unsupported(limited(uri, 256))
+    LinkDestination::Unsupported(limited(uri, crate::constants::MAX_TRUNCATED_URI_CHARS))
 }
 pub(crate) fn outlines(doc: &Document) -> Result<(Vec<OutlineEntry>, bool), String> {
     let tree = doc.outlines().map_err(|e| e.to_string())?;
@@ -98,22 +98,27 @@ pub(crate) fn outlines(doc: &Document) -> Result<(Vec<OutlineEntry>, bool), Stri
     let mut entries = Vec::new();
     let mut truncated = false;
     while let Some((node, depth)) = stack.pop() {
-        if entries.len() == 4096 {
+        if entries.len() == crate::constants::MAX_OUTLINE_ENTRIES {
             truncated = true;
             break;
         }
         entries.push(OutlineEntry {
-            title: limited(&node.title, 512),
+            title: limited(&node.title, crate::constants::MAX_OUTLINE_TITLE_CHARS),
             depth,
             destination: destination(doc, node.dest, node.uri.as_deref().unwrap_or("")),
         });
-        if depth < 32 {
+        if depth < crate::constants::MAX_OUTLINE_DEPTH {
             stack.extend(node.down.iter().rev().map(|n| (n, depth + 1)));
         } else if !node.down.is_empty() {
             truncated = true;
         }
     }
     Ok((entries, truncated))
+}
+
+/// MuPDF-specific outline extraction used by the DocumentBackend trait.
+pub(crate) fn outlines_mupdf(doc: &Document) -> Result<(Vec<OutlineEntry>, bool), String> {
+    outlines(doc)
 }
 pub(crate) fn links(doc: &Document, page: usize) -> Result<(Vec<PageLink>, bool), String> {
     let page = doc.load_page(page as i32).map_err(|e| e.to_string())?;
@@ -124,7 +129,7 @@ pub(crate) fn links(doc: &Document, page: usize) -> Result<(Vec<PageLink>, bool)
         let mut result = Vec::new();
         let mut truncated = false;
         for (index, link) in page.links().map_err(|e| e.to_string())?.enumerate() {
-            if index == 1024 {
+            if index == crate::constants::MAX_LINKS {
                 truncated = true;
                 break;
             }
