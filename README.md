@@ -24,7 +24,7 @@ Bump the workspace version in `Cargo.toml`, then push a matching tag (for exampl
 
 Open PDF or Ctrl+O opens the native picker. Use the scrollbars or wheel to browse, enter a page number to jump, and use toolbar controls to zoom or fit the page. Ctrl +/− changes zoom, Ctrl+0 fits width, PgUp/PgDn changes page, arrows scroll, and Home/End navigates to the beginning/end. Zoom is limited to 25–400%.
 
-Encrypted PDFs show a masked password form with retry and cancel. Ctrl+F or Find opens case-insensitive search; Enter/Next and Previous move between highlighted matches. Pages toggles lazy thumbnails; click one to jump. Use Bookmarks to navigate document outlines. Click an internal link to jump to its destination, or a web link to open the default browser. The view picker offers Continuous, Single page, and Facing pages (1–2, 3–4). Drag across text and page boundaries, then press Ctrl+C or Copy selection. Drag near the viewport edge to scroll. Selection is limited to 16 pages, with page boundaries copied as blank lines; highlighting remains single-page. Copy restrictions are respected. Image-only pages have no selectable text; form detection uses OCR without adding a searchable text layer. Passwords, queries, and copied text are not written to traces.
+Encrypted PDFs show a masked password form with retry and cancel. Ctrl+F or Find opens case-insensitive search; Enter/Next and Previous move between highlighted matches. Pages toggles lazy thumbnails; click one to jump. Use Bookmarks to navigate document outlines. Click an internal link to jump to its destination, or a web link to open the default browser. The view picker offers Continuous, Single page, and Facing pages (1–2, 3–4). Drag across text and page boundaries, then press Ctrl+C or Copy selection. Drag near the viewport edge to scroll. Selection is limited to 16 pages, with page boundaries copied as blank lines; highlighting remains single-page. Copy restrictions are respected. Ctrl+P or Print writes a uniquely named copy of the current document next to the original and hands it to the Windows printer. Image-only pages have no selectable text; form detection uses OCR without adding a searchable text layer. Passwords, queries, and copied text are not written to traces.
 
 ## Validation
 
@@ -73,7 +73,7 @@ Search is capped at 10,000 matches and 512 UTF-8 bytes per query. Selectable tex
 
 ## License
 
-PDFree source: AGPL-3.0-only. MuPDF and mupdf-rs are AGPL licensed; Slint and other dependencies retain their own licenses. See LICENSE and THIRD_PARTY_NOTICES.md. No remote repository is configured by this prototype.
+PDFree source: AGPL-3.0-only. MuPDF and mupdf-rs are AGPL licensed; Slint and other dependencies retain their own licenses. See LICENSE and THIRD_PARTY_NOTICES.md. Source is hosted at https://github.com/tonythethompson/PDFree, where CI runs fmt, clippy, and the test suite on every push and pull request.
 
 ## Forms and signatures
 

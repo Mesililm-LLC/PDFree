@@ -30,6 +30,7 @@ Statuses describe application behavior, not everything MuPDF could support.
 | Rotate / move / delete / blank page | Implemented, experimental | Shared undo; must retain one page; ASSEMBLE permission |
 | Insert / merge | Partial | Up to 16 unpassworded PDFs; supported links/destinations, popup/annotation graphs and AcroForm fields preserved; incompatible forms/actions rejected |
 | Extract / split | Implemented, experimental | New files only; COPY and ASSEMBLE; bookmarks removed; not secure redaction |
+| Print (Ctrl+P, toolbar, context menu) | Implemented, experimental | Windows only: writes a uniquely named sibling copy, then `ShellExecuteW` with the `print` verb; other platforms keep the copy and report printing unsupported |
 | Existing AcroForm filling | Implemented, experimental | Owned field/widget identities, text/button/choice/list values, linked widgets, permissions, shared undo and verified save |
 | Manual form authoring | Implemented, experimental | Draw/move/resize/duplicate/delete, simple type conversion, labels and properties; imported complex trees remain fill-only |
 | Date / Number fields | Implemented | Standard text widgets with PDFree metadata and local validation; other readers see ordinary text fields |
